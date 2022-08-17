@@ -1,26 +1,18 @@
 package table
 
 import (
-	"bufio"
-	"encoding/binary"
-	"fmt"
-	"io"
+	"bytes"
 	"kvdb/pkg/memtable/skiplist"
-	"os"
-	"path"
-	"strconv"
+	"log"
 	"sync"
 )
-
-const maxMemTableSize = 4096 * 1024
-const restartInterval = 16
 
 type Table struct {
 	mu sync.RWMutex
 
-	dbPath    string
+	Path      string
 	memTable  *skiplist.SkipList
-	iMemTable []*ImmutableMemTable
+	levelTree *LevelTree
 }
 
 func (t *Table) Put(key, value string) error {
@@ -38,120 +30,77 @@ func (t *Table) flush() error {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
-	filePath := path.Join(t.dbPath, "0."+strconv.Itoa(len(t.iMemTable))+".sst")
-	immutableTable := NewImmutableMemTable(filePath, t.memTable, restartInterval)
-	t.iMemTable = append(t.iMemTable, immutableTable)
+	if t.memTable.Size() < maxMemTableSize {
+		return nil
+	}
 
+	fd, fileName, seqNo := t.levelTree.NewSstFile(0)
+	immutableTable := NewImmutableMemTable(fd, t.memTable)
 	t.memTable = skiplist.NewMemTable()
 
-	go immutableTable.FlushMemTable()
+	go func() {
+
+		log.Println("写入", fileName)
+		immutableTable.FlushMemTable()
+		t.levelTree.AddLevelNode(fileName, 0, seqNo)
+
+		t.levelTree.compactionChan <- 0
+	}()
 
 	return nil
 }
 
-func NewTable(dbPath string) *Table {
+func NewTable(filePath string) *Table {
 
-	sl := skiplist.NewMemTable()
-
-	return &Table{dbPath: dbPath, memTable: sl}
+	return &Table{Path: filePath, memTable: skiplist.NewMemTable(), levelTree: NewLevelTree(filePath)}
 }
 
-func readSstTable(sstFilePath string) {
+type Record struct {
+	Key   []byte
+	Value []byte
+	Idx   int
+	next  *Record
+}
 
-	fd, err := os.OpenFile(sstFilePath, os.O_RDONLY, 0644)
+func (r *Record) push(key, value []byte, idx int) *Record {
 
-	if err != nil {
-		fmt.Println("打开db文件失败", err)
-	}
+	h := r
 
-	reader := bufio.NewReader(fd)
-
-	_, err = fd.Seek(-40, io.SeekEnd)
-
-	if err != nil {
-		fmt.Println("移动读取位置到meta data失败", err)
-	}
-
-	filterOffset, err := binary.ReadUvarint(reader)
-
-	if err != nil {
-		fmt.Println("读取过滤器偏移失败", err)
-	}
-
-	indexOffset, err := binary.ReadUvarint(reader)
-
-	if err != nil {
-		fmt.Println("读取索引偏移失败", err)
-	}
-
-	indexSize, err := binary.ReadUvarint(reader)
-
-	if err != nil {
-		fmt.Println("读取索引长度失败", err)
-	}
-
-	fmt.Println("过滤器偏移:", filterOffset, "索引偏移:", indexOffset, "索引长度", indexSize)
-
-	_, err = fd.Seek(0, io.SeekStart)
-
-	if err != nil {
-		fmt.Println("移动读取位置到原点失败", err)
-	}
-	reader.Reset(fd)
-
-	prevKey := make([]byte, 0)
+	cur := r
+	var prev *Record
 
 	for {
-
-		keyPrefixLen, err := binary.ReadUvarint(reader)
-
-		if err != nil {
-			fmt.Println("读取key共享长度失败", err)
+		if cur == nil {
+			if prev != nil {
+				prev.next = &Record{Key: key, Value: value, Idx: idx}
+			} else {
+				h = &Record{Key: key, Value: value, Idx: idx}
+			}
 			break
 		}
 
-		keyLen, err := binary.ReadUvarint(reader)
-
-		if err != nil {
-			fmt.Println("读取key长度失败", err)
+		cmp := bytes.Compare(key, cur.Key)
+		if cmp == 0 {
+			if idx >= r.Idx {
+				cur.Key = key
+				cur.Value = value
+				cur.Idx = idx
+			}
 			break
-		}
-
-		valueLen, err := binary.ReadUvarint(reader)
-
-		if err != nil {
-			fmt.Println("读取Value长度失败", err)
+		} else if cmp < 0 {
+			if prev != nil {
+				prev.next = &Record{Key: key, Value: value, Idx: idx}
+				prev.next.next = cur
+			} else {
+				h = &Record{Key: key, Value: value, Idx: idx}
+				h.next = cur
+			}
 			break
-		}
-
-		key := make([]byte, keyLen)
-		value := make([]byte, valueLen)
-
-		_, err = io.ReadFull(reader, key)
-		if err != nil {
-			fmt.Println("读取Key失败", err)
-			break
-		}
-
-		_, err = io.ReadFull(reader, value)
-		if err != nil {
-			fmt.Println("读取Value失败", err)
-			break
-		}
-
-		fmt.Println("key:", keyPrefixLen+keyLen, string(prevKey[0:keyPrefixLen])+string(key), "value:", valueLen, string(value))
-
-		prevKey = append(prevKey[:0], key...)
-
-		offset, err := fd.Seek(0, io.SeekCurrent)
-		if err != nil {
-			fmt.Println("取得当前偏移失败", err)
-		}
-
-		if uint64(offset)-uint64(reader.Buffered()) >= filterOffset {
-			fmt.Println("data读取结束")
-			break
+		} else {
+			prev = cur
+			cur = cur.next
 		}
 	}
 
+	return h
 }

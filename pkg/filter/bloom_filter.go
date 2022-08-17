@@ -47,6 +47,18 @@ func (b *BloomFilter) Hash() []byte {
 	return dest
 }
 
+func (b *BloomFilter) Size() int {
+	n := len(b.hashKeys)
+	k := uint8(b.bitsPerKey * 69 / (100 * n))
+
+	if k < 1 {
+		k = 1
+	} else if k > 30 {
+		k = 30
+	}
+	return int(n * b.bitsPerKey)
+}
+
 func NewBloomFilter(bitsPerKey int) *BloomFilter {
 
 	return &BloomFilter{
