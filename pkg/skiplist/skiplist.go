@@ -101,7 +101,7 @@ func (s *SkipList) getNode(key []byte) (int, bool) {
 	}
 }
 
-func (s *SkipList) Put(key []byte, value []byte) error {
+func (s *SkipList) Put(key []byte, value []byte) {
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -117,8 +117,6 @@ func (s *SkipList) Put(key []byte, value []byte) error {
 
 		s.kvNode[n] = keyStart
 		s.kvNode[n+nVal] = len(value)
-
-		return nil
 	}
 
 	h := s.randHeight()
@@ -139,8 +137,6 @@ func (s *SkipList) Put(key []byte, value []byte) error {
 	}
 
 	s.kvSize += len(value) + len(key)
-
-	return nil
 }
 
 func (s *SkipList) Get(key []byte) []byte {
@@ -166,7 +162,7 @@ func (s *SkipList) Size() int {
 	return s.kvSize
 }
 
-func NewMemTable() *SkipList {
+func NewSkipList() *SkipList {
 
 	s := &SkipList{
 		rand:      rand.New(rand.NewSource(0xdeadbeef)),

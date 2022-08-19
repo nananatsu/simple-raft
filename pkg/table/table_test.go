@@ -4,36 +4,41 @@ import (
 	"kvdb/pkg/utils"
 	"log"
 	"math/rand"
-	"os"
-	"path"
 	"testing"
 	"time"
 )
 
+const devTestPath = "../../build/sst"
+
 func TestNewTable(t *testing.T) {
 
-	pwd, err := os.Getwd()
-	if err != nil {
-		t.Error("获取当前目录失败")
-	}
-
-	NewTable(path.Join(pwd, "sst"))
+	NewTable(devTestPath)
 
 	timer := time.NewTimer(600 * time.Second)
-
 	<-timer.C
+}
+
+func TestTableGet(t *testing.T) {
+
+	table := NewTable(devTestPath)
+
+	table.Put("hello", "world")
+
+	if table.Get("hello") != "world" {
+		t.Error("数据不一致")
+	}
+
+	table.Delete("hello")
+
+	log.Println(table.Get("egndfcfwownx"))
+
 }
 
 func TestTableFlush(t *testing.T) {
 
-	pwd, err := os.Getwd()
-	if err != nil {
-		t.Error("获取当前目录失败")
-	}
-
 	metricChan := make(chan int, 10000)
 
-	table := NewTable(path.Join(pwd, "sst"))
+	table := NewTable(devTestPath)
 
 	for i := 0; i < 10; i++ {
 		go func(chan int) {
@@ -59,13 +64,8 @@ func TestTableFlush(t *testing.T) {
 
 func TestCompactionTable(t *testing.T) {
 
-	pwd, err := os.Getwd()
-	if err != nil {
-		t.Error("获取当前目录失败")
-	}
+	table := NewTable(devTestPath)
 
-	table := NewTable(path.Join(pwd, "sst"))
-
-	table.levelTree.Compaction(0)
+	table.lsmTree.Compaction(0)
 
 }

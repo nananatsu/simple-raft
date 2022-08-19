@@ -1,29 +1,60 @@
 package table
 
 import (
-	"bytes"
-	"kvdb/pkg/memtable/skiplist"
+	"io/fs"
+	"kvdb/pkg/lsm"
+	"kvdb/pkg/wal"
 	"log"
+	"os"
+	"path"
+	"strconv"
+	"strings"
 	"sync"
 )
 
 type Table struct {
 	mu sync.RWMutex
 
-	Path      string
-	memTable  *skiplist.SkipList
-	levelTree *LevelTree
+	dir            string
+	memTable       *MemTable
+	immutableTable []*ImmutableTable
+	lsmTree        *lsm.Tree
 }
 
-func (t *Table) Put(key, value string) error {
+func (t *Table) Put(key, value string) {
 
 	t.memTable.Put([]byte(key), []byte(value))
 
 	if t.memTable.Size() > maxMemTableSize {
 		t.flush()
 	}
+}
 
-	return nil
+func (t *Table) Get(key string) string {
+
+	k := []byte(key)
+
+	value := t.memTable.Get(k)
+
+	if value == nil && len(t.immutableTable) > 0 {
+		for i := len(t.immutableTable) - 1; i > 0; i-- {
+			value = t.immutableTable[i].memTable.Get(k)
+			if value != nil {
+				break
+			}
+		}
+	}
+
+	if value == nil {
+		value = t.lsmTree.Get(k)
+	}
+
+	return string(value)
+}
+
+func (t *Table) Delete(key string) {
+
+	t.memTable.Put([]byte(key), nil)
 }
 
 func (t *Table) flush() error {
@@ -34,73 +65,115 @@ func (t *Table) flush() error {
 		return nil
 	}
 
-	fd, fileName, seqNo := t.levelTree.NewSstFile(0)
-	immutableTable := NewImmutableMemTable(fd, t.memTable)
-	t.memTable = skiplist.NewMemTable()
+	immutableTable := NewImmutableMemTable(t.dir, t.memTable)
+	t.immutableTable = append(t.immutableTable, immutableTable)
+	t.memTable = NewMemTable(t.dir, t.memTable.seqNo+1)
+
+	if len(t.immutableTable) > 5 {
+		t.immutableTable = t.immutableTable[len(t.immutableTable)-5:]
+	}
 
 	go func() {
-
-		log.Println("写入", fileName)
-		immutableTable.FlushMemTable()
-		t.levelTree.AddLevelNode(fileName, 0, seqNo)
-
-		t.levelTree.compactionChan <- 0
+		size, filter, index := immutableTable.FlushMemTable()
+		t.lsmTree.AddNode(0, immutableTable.memTable.seqNo, size, filter, index)
 	}()
 
 	return nil
 }
 
-func NewTable(filePath string) *Table {
+func NewTable(dir string) *Table {
 
-	return &Table{Path: filePath, memTable: skiplist.NewMemTable(), levelTree: NewLevelTree(filePath)}
-}
+	lt := lsm.NewTree(dir)
 
-type Record struct {
-	Key   []byte
-	Value []byte
-	Idx   int
-	next  *Record
-}
+	entries, err := os.ReadDir(dir)
 
-func (r *Record) push(key, value []byte, idx int) *Record {
+	if err != nil {
+		log.Println("打开db文件夹失败", err)
+	}
 
-	h := r
+	immutableTables := make([]*ImmutableTable, 0)
 
-	cur := r
-	var prev *Record
+	maxSeqNo := 0
+	for _, entry := range entries {
 
-	for {
-		if cur == nil {
-			if prev != nil {
-				prev.next = &Record{Key: key, Value: value, Idx: idx}
-			} else {
-				h = &Record{Key: key, Value: value, Idx: idx}
-			}
-			break
+		log.Println(entry)
+
+		level, seqNo, fileType, fileInfo := CheckFiles(entry)
+
+		if level == -1 {
+			continue
 		}
 
-		cmp := bytes.Compare(key, cur.Key)
-		if cmp == 0 {
-			if idx >= r.Idx {
-				cur.Key = key
-				cur.Value = value
-				cur.Idx = idx
+		if fileInfo.Size() == 0 {
+			os.Remove(path.Join(dir, entry.Name()))
+			continue
+		}
+
+		if level == 0 && seqNo > maxSeqNo {
+			maxSeqNo = seqNo
+		}
+
+		if fileType == "sst" {
+
+			if level < lsm.MaxLevel {
+				lt.AddNode(level, seqNo, fileInfo.Size(), nil, nil)
 			}
-			break
-		} else if cmp < 0 {
-			if prev != nil {
-				prev.next = &Record{Key: key, Value: value, Idx: idx}
-				prev.next.next = cur
-			} else {
-				h = &Record{Key: key, Value: value, Idx: idx}
-				h.next = cur
+		} else if fileType == "wal" {
+			menTable := NewMemTable(dir, seqNo)
+			r := wal.NewWalReader(path.Join(dir, entry.Name()))
+
+			for {
+				k, v := r.Next()
+				if k == nil {
+					break
+				}
+				menTable.Put(k, v)
 			}
-			break
-		} else {
-			prev = cur
-			cur = cur.next
+			immutableTables = append(immutableTables, NewImmutableMemTable(dir, menTable))
 		}
 	}
 
-	return h
+	table := &Table{dir: dir, memTable: NewMemTable(dir, maxSeqNo+1), immutableTable: immutableTables, lsmTree: lt}
+
+	if len(table.immutableTable) > 0 {
+		for _, it := range table.immutableTable {
+			size, filter, index := it.FlushMemTable()
+			table.lsmTree.AddNode(0, it.memTable.seqNo, size, filter, index)
+		}
+	}
+
+	return table
+}
+
+func CheckFiles(entry fs.DirEntry) (int, int, string, fs.FileInfo) {
+
+	if entry.IsDir() {
+		return -1, -1, "", nil
+	}
+
+	levelNodeInfo := strings.Split(entry.Name(), ".")
+
+	if len(levelNodeInfo) != 3 {
+		return -1, -1, "", nil
+	}
+
+	level, err := strconv.Atoi(levelNodeInfo[0])
+
+	if err != nil {
+		return -1, -1, "", nil
+	}
+
+	seqNo, err := strconv.Atoi(levelNodeInfo[1])
+
+	if err != nil {
+		return -1, -1, "", nil
+	}
+
+	fileInfo, err := entry.Info()
+
+	if err != nil {
+		return -1, -1, "", nil
+	}
+
+	return level, seqNo, levelNodeInfo[2], fileInfo
 }

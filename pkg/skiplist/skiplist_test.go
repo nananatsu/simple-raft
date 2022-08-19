@@ -6,7 +6,7 @@ import (
 
 func TestMemTable(t *testing.T) {
 
-	table := NewMemTable()
+	table := NewSkipList()
 
 	key := []byte("hello")
 	key2 := []byte("olleh")

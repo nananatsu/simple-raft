@@ -1,7 +1,7 @@
-package table
+package lsm
 
 import (
-	"fmt"
+	"log"
 	"testing"
 )
 
@@ -14,6 +14,14 @@ func TestCompress(t *testing.T) {
 	b.Append([]byte("he1lo"), []byte("woor1d"))
 	b.Append([]byte("h-elo"), []byte("w@@rld"))
 
-	fmt.Println(string(b.compress()))
+	log.Println(string(b.compress()))
 
+}
+
+func TestGetSeparator(t *testing.T) {
+
+	a := []byte("hello")
+	b := []byte("hello n")
+
+	log.Println(string(GetSeparator(a, b)))
 }

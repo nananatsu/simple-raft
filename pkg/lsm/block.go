@@ -1,16 +1,16 @@
-package table
+package lsm
 
 import (
 	"bytes"
 	"encoding/binary"
 	"io"
-
-	"hash/crc32"
+	"kvdb/pkg/utils"
 
 	"github.com/golang/snappy"
 )
 
-var crc32Table = crc32.MakeTable(crc32.Castagnoli)
+const restartInterval = 16
+const blockTrailerlen = 4
 
 type Block struct {
 	restartInterval int
@@ -74,7 +74,7 @@ func (d *Block) compress() []byte {
 	size := len(compressed)
 	compressed = compressed[:size+blockTrailerlen]
 
-	binary.LittleEndian.PutUint32(compressed[size:], crc32.Checksum(compressed, crc32Table))
+	binary.LittleEndian.PutUint32(compressed[size:], utils.Checksum(compressed))
 
 	return compressed
 }

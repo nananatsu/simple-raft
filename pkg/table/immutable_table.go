@@ -1,29 +1,38 @@
 package table
 
 import (
-	"kvdb/pkg/memtable/skiplist"
+	"kvdb/pkg/lsm"
+	"kvdb/pkg/skiplist"
+	"log"
 	"os"
 )
 
 type ImmutableTable struct {
-	memTable *skiplist.SkipList
-	writer   *SstWriter
+	memTable *MemTable
+	writer   *lsm.SstWriter
 }
 
-func (t *ImmutableTable) FlushMemTable() {
+func (t *ImmutableTable) FlushMemTable() (int64, []byte, []*lsm.Index) {
+	defer t.memTable.wal.Finish()
 
-	it := skiplist.NewSkipListIter(t.memTable)
+	log.Printf("写入: %d.%d.sst \n", 0, t.memTable.seqNo)
+
+	it := skiplist.NewSkipListIter(t.memTable.table)
 
 	for it.Next() {
 		t.writer.Append(it.Key, it.Value)
 	}
-	t.writer.Finish()
+	return t.writer.Finish()
 }
 
-func NewImmutableMemTable(fd *os.File, memTable *skiplist.SkipList) *ImmutableTable {
+func NewImmutableMemTable(dir string, memTable *MemTable) *ImmutableTable {
 
-	return &ImmutableTable{
+	fd := lsm.OpenFile(dir, os.O_WRONLY|os.O_CREATE, 0, memTable.seqNo)
+
+	immutableTable := &ImmutableTable{
 		memTable: memTable,
-		writer:   NewSstWriter(fd),
+		writer:   lsm.NewSstWriter(fd),
 	}
+
+	return immutableTable
 }
