@@ -6,6 +6,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"io"
+	"kvdb/pkg/utils"
 	"log"
 	"os"
 	"sync"
@@ -20,6 +21,7 @@ type SstReader struct {
 	reader *bufio.Reader
 
 	FilterOffset int64
+	FilterSize   int64
 	IndexOffset  int64
 	IndexSize    int64
 
@@ -34,11 +36,11 @@ type MetaData struct {
 
 type Index struct {
 	Key    []byte
-	Offset int64
-	Size   int64
+	Offset uint64
+	Size   uint64
 }
 
-func (r *SstReader) ReadMetaData() error {
+func (r *SstReader) ReadFooter() error {
 
 	_, err := r.fd.Seek(-footerLen, io.SeekEnd)
 
@@ -47,6 +49,12 @@ func (r *SstReader) ReadMetaData() error {
 	}
 
 	filterOffset, err := binary.ReadUvarint(r.reader)
+
+	if err != nil {
+		return err
+	}
+
+	filterSize, err := binary.ReadUvarint(r.reader)
 
 	if err != nil {
 		return err
@@ -64,21 +72,23 @@ func (r *SstReader) ReadMetaData() error {
 		return err
 	}
 
-	if filterOffset == 0 || indexOffset == 0 || indexSize == 0 {
+	if filterOffset == 0 || filterSize == 0 || indexOffset == 0 || indexSize == 0 {
+		log.Println(filterOffset, filterSize, indexOffset, indexSize)
 		return fmt.Errorf("无法解析文件")
 	}
 
 	r.FilterOffset = int64(filterOffset)
+	r.FilterSize = int64(filterSize)
 	r.IndexOffset = int64(indexOffset)
 	r.IndexSize = int64(indexSize)
 
 	return nil
 }
 
-func (r *SstReader) ReadFilter() (filter []byte, err error) {
+func (r *SstReader) ReadFilter() (filter map[uint64][]byte, err error) {
 
 	if r.FilterOffset == 0 {
-		if err = r.ReadMetaData(); err != nil {
+		if err = r.ReadFooter(); err != nil {
 			return nil, err
 		}
 	}
@@ -88,14 +98,33 @@ func (r *SstReader) ReadFilter() (filter []byte, err error) {
 	}
 	r.reader.Reset(r.fd)
 
-	filter, err = r.Read(r.IndexOffset - r.FilterOffset)
+	compress, err := r.Read(r.FilterSize)
+
+	if err != nil {
+		return nil, err
+	}
+
+	crc := binary.LittleEndian.Uint32(compress[r.FilterSize-4:])
+	compressData := compress[:r.FilterSize-4]
+
+	if utils.Checksum(compressData) != crc {
+		return nil, fmt.Errorf("数据块校验失败")
+	}
+
+	data, err := snappy.Decode(nil, compressData)
+
+	if err != nil {
+		return nil, err
+	}
+	filter = ReadFilter(data)
+
 	return
 }
 
 func (r *SstReader) ReadIndex() (index []*Index, err error) {
 
 	if r.IndexOffset == 0 {
-		if err = r.ReadMetaData(); err != nil {
+		if err = r.ReadFooter(); err != nil {
 			return nil, err
 		}
 	}
@@ -105,13 +134,19 @@ func (r *SstReader) ReadIndex() (index []*Index, err error) {
 	}
 	r.reader.Reset(r.fd)
 
-	compress, err := r.Read(r.IndexSize - 4)
+	compress, err := r.Read(r.IndexSize)
 
 	if err != nil {
 		return nil, err
 	}
+	crc := binary.LittleEndian.Uint32(compress[r.IndexSize-4:])
+	compressData := compress[:r.IndexSize-4]
 
-	data, err := snappy.Decode(nil, compress)
+	if utils.Checksum(compressData) != crc {
+		return nil, fmt.Errorf("数据块校验失败")
+	}
+
+	data, err := snappy.Decode(nil, compressData)
 
 	if err != nil {
 		return nil, err
@@ -121,16 +156,16 @@ func (r *SstReader) ReadIndex() (index []*Index, err error) {
 	return
 }
 
-func (r *SstReader) ReadBlock(offset, size int64) (data []byte, err error) {
+func (r *SstReader) ReadBlock(offset, size uint64) (data []byte, err error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	if _, err = r.fd.Seek(r.IndexOffset, io.SeekStart); err != nil {
+	if _, err = r.fd.Seek(int64(offset), io.SeekStart); err != nil {
 		return nil, err
 	}
 	r.reader.Reset(r.fd)
 
-	compressed, err := r.Read(size - 4)
+	compressed, err := r.Read(int64(size) - 4)
 
 	if err != nil {
 		return nil, err
@@ -269,10 +304,40 @@ func ReadIndex(index []byte) []*Index {
 
 		indexes = append(indexes, &Index{
 			Key:    key,
-			Offset: int64(offset),
-			Size:   int64(size),
+			Offset: uint64(offset),
+			Size:   uint64(size),
 		})
 		prevKey = key
 	}
 	return indexes
+}
+
+func ReadFilter(index []byte) map[uint64][]byte {
+
+	data, _ := DecodeBlock(index)
+	indexBuf := bytes.NewBuffer(data)
+
+	filterMap := make(map[uint64][]byte, 0)
+	prevKey := make([]byte, 0)
+
+	for {
+		key, value, err := ReadRecord(prevKey, indexBuf)
+
+		if err != nil {
+			break
+		}
+
+		buf := bytes.NewBuffer(key)
+
+		offset, err := binary.ReadUvarint(buf)
+
+		if err != nil {
+			log.Println("解析key失败", err)
+			continue
+		}
+
+		filterMap[offset] = value
+		prevKey = key
+	}
+	return filterMap
 }

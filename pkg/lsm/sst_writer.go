@@ -41,45 +41,56 @@ type SstWriter struct {
 	fd *os.File
 
 	dataBuf   *bytes.Buffer
+	filterBuf *bytes.Buffer
 	indexBuf  *bytes.Buffer
-	indexMeta []*Index
 
-	data  *Block
-	bf    *filter.BloomFilter
-	index *Block
+	index  []*Index
+	filter map[uint64][]byte
+
+	bf          *filter.BloomFilter
+	dataBlock   *Block
+	filterBlock *Block
+	indexBlock  *Block
 
 	indexScratch [20]byte
 	prevKey      []byte
 
-	prevBlockOffset int
-	prevBlockSize   int
+	prevBlockOffset uint64
+	prevBlockSize   uint64
 }
 
 func (w *SstWriter) addIndex(key []byte) {
 
-	n := binary.PutUvarint(w.indexScratch[0:], uint64(w.prevBlockOffset))
-	n += binary.PutUvarint(w.indexScratch[n:], uint64(w.prevBlockSize))
-	w.index.Append(w.prevKey, w.indexScratch[:n])
+	n := binary.PutUvarint(w.indexScratch[0:], w.prevBlockOffset)
+	n += binary.PutUvarint(w.indexScratch[n:], w.prevBlockSize)
+	w.indexBlock.Append(w.prevKey, w.indexScratch[:n])
 	separator := GetSeparator(w.prevKey, key)
 
-	w.indexMeta = append(w.indexMeta, &Index{Key: separator, Offset: int64(w.prevBlockOffset), Size: int64(w.prevBlockSize)})
+	w.index = append(w.index, &Index{Key: separator, Offset: w.prevBlockOffset, Size: w.prevBlockSize})
 }
 
 func (w *SstWriter) Append(key, value []byte) {
 
-	if w.data.nEntries == 0 {
+	if w.dataBlock.nEntries == 0 {
 		w.addIndex(key)
 	}
 
-	w.data.Append(key, value)
+	w.dataBlock.Append(key, value)
 	w.bf.Add(key)
 
 	w.prevKey = key
 
-	if w.data.Size() > dataBlockSize {
+	if w.dataBlock.Size() > dataBlockSize {
 		var err error
-		w.prevBlockOffset = w.dataBuf.Len()
-		w.prevBlockSize, err = w.data.FlushBlockTo(w.dataBuf)
+		w.prevBlockOffset = uint64(w.dataBuf.Len())
+		n := binary.PutUvarint(w.indexScratch[0:], uint64(w.prevBlockOffset))
+
+		filter := w.bf.Hash()
+		w.filter[w.prevBlockOffset] = filter
+		w.filterBlock.Append(w.indexScratch[:n], filter)
+		w.bf.Reset()
+
+		w.prevBlockSize, err = w.dataBlock.FlushBlockTo(w.dataBuf)
 
 		if err != nil {
 			log.Println("写入block失败", err)
@@ -87,30 +98,36 @@ func (w *SstWriter) Append(key, value []byte) {
 	}
 }
 
-func (w *SstWriter) Finish() (int64, []byte, []*Index) {
+func (w *SstWriter) Finish() (int64, map[uint64][]byte, []*Index) {
+
+	if w.bf.KeyLen() > 0 {
+		n := binary.PutUvarint(w.indexScratch[0:], uint64(w.prevBlockOffset))
+		w.filterBlock.Append(w.indexScratch[:n], w.bf.Hash())
+	}
+	w.filterBlock.FlushBlockTo(w.filterBuf)
 
 	w.addIndex(w.prevKey)
-	w.index.FlushBlockTo(w.indexBuf)
+	w.indexBlock.FlushBlockTo(w.indexBuf)
 
 	footer := make([]byte, footerLen)
 
 	size := w.dataBuf.Len()
-	filterBlock := w.bf.Hash()
 
 	// metadata 索引起始偏移，整体长度
 	n := binary.PutUvarint(footer[0:], uint64(size))
-	size += len(filterBlock)
+	n += binary.PutUvarint(footer[n:], uint64(w.filterBuf.Len()))
+	size += w.filterBuf.Len()
 	n += binary.PutUvarint(footer[n:], uint64(size))
-	size += w.indexBuf.Len()
 	n += binary.PutUvarint(footer[n:], uint64(w.indexBuf.Len()))
+	size += w.indexBuf.Len()
 	size += footerLen
 
 	w.fd.Write(w.dataBuf.Bytes())
-	w.fd.Write(filterBlock)
+	w.fd.Write(w.filterBuf.Bytes())
 	w.fd.Write(w.indexBuf.Bytes())
 	w.fd.Write(footer)
 
-	return int64(size), filterBlock, w.indexMeta
+	return int64(size), w.filter, w.index
 }
 
 func (w *SstWriter) Size() int {
@@ -126,19 +143,17 @@ func (w *SstWriter) Close() {
 
 func NewSstWriter(fd *os.File) *SstWriter {
 
-	buf := make([]byte, 0)
-	indexBuf := make([]byte, 0)
-	prevKey := make([]byte, 0)
-	indexMeta := make([]*Index, 0)
-
 	return &SstWriter{
-		fd:        fd,
-		dataBuf:   bytes.NewBuffer(buf),
-		indexBuf:  bytes.NewBuffer(indexBuf),
-		indexMeta: indexMeta,
-		bf:        filter.NewBloomFilter(10),
-		data:      NewBlock(),
-		index:     NewBlock(),
-		prevKey:   prevKey,
+		fd:          fd,
+		dataBuf:     bytes.NewBuffer(make([]byte, 0)),
+		filterBuf:   bytes.NewBuffer(make([]byte, 0)),
+		indexBuf:    bytes.NewBuffer(make([]byte, 0)),
+		filter:      make(map[uint64][]byte),
+		index:       make([]*Index, 0),
+		bf:          filter.NewBloomFilter(10),
+		dataBlock:   NewBlock(),
+		filterBlock: NewBlock(),
+		indexBlock:  NewBlock(),
+		prevKey:     make([]byte, 0),
 	}
 }

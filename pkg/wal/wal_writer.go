@@ -8,9 +8,8 @@ import (
 	"os"
 	"path"
 	"strconv"
+	"sync"
 )
-
-const walBlockDataSize = 32*1024 - 7
 
 const (
 	kFull = iota
@@ -20,14 +19,17 @@ const (
 )
 
 type WalWriter struct {
+	mu sync.Mutex
+
 	fd            *os.File
 	header        [20]byte
-	blockHeader   [7]byte
 	buf           *bytes.Buffer
 	prevBlockType uint8
 }
 
 func (w *WalWriter) Write(key, value []byte) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
 
 	n := binary.PutUvarint(w.header[0:], uint64(len(key)))
 	n += binary.PutUvarint(w.header[n:], uint64(len(value)))
@@ -38,7 +40,7 @@ func (w *WalWriter) Write(key, value []byte) {
 	copy(b[n:], key)
 	copy(b[n+len(key):], value)
 
-	size := walBlockDataSize - w.buf.Len()
+	size := walBlockSize - w.buf.Len()
 
 	var blockType uint8
 	if size < length {
@@ -48,7 +50,7 @@ func (w *WalWriter) Write(key, value []byte) {
 		} else {
 			blockType = kFirst
 		}
-		w.WriteBlock(blockType, uint16(w.buf.Len()))
+		w.WriteBlock(blockType, uint16(w.buf.Len())-7)
 		w.prevBlockType = blockType
 		w.buf.Write(b[size:])
 
@@ -62,7 +64,7 @@ func (w *WalWriter) Write(key, value []byte) {
 			} else {
 				blockType = kFull
 			}
-			w.WriteBlock(blockType, uint16(w.buf.Len()-remian))
+			w.WriteBlock(blockType, uint16(w.buf.Len()-remian-7))
 			w.prevBlockType = blockType
 		}
 	}
@@ -71,16 +73,13 @@ func (w *WalWriter) Write(key, value []byte) {
 func (w *WalWriter) WriteBlock(blockType uint8, length uint16) {
 
 	data := w.buf.Bytes()
-	crc := utils.Checksum(data)
-
-	binary.LittleEndian.PutUint32(w.blockHeader[:4], crc)
-	binary.LittleEndian.PutUint16(w.blockHeader[4:6], length)
-	w.blockHeader[6] = byte(blockType)
-
-	w.fd.Write(w.blockHeader[:7])
+	binary.LittleEndian.PutUint16(data[4:6], length)
+	data[6] = byte(blockType)
+	crc := utils.Checksum(data[4:])
+	binary.LittleEndian.PutUint32(data[:4], crc)
 	w.fd.Write(data)
-	w.buf.Reset()
 
+	w.buf.Truncate(7)
 }
 
 func (w *WalWriter) Finish() {
@@ -99,6 +98,6 @@ func NewWalWriter(dir string, seqNo int) *WalWriter {
 
 	return &WalWriter{
 		fd:  fd,
-		buf: bytes.NewBuffer(make([]byte, 0)),
+		buf: bytes.NewBuffer(make([]byte, 7)),
 	}
 }

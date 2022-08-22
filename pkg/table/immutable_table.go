@@ -12,8 +12,7 @@ type ImmutableTable struct {
 	writer   *lsm.SstWriter
 }
 
-func (t *ImmutableTable) FlushMemTable() (int64, []byte, []*lsm.Index) {
-	defer t.memTable.wal.Finish()
+func (t *ImmutableTable) FlushMemTable() (size int64, filter map[uint64][]byte, index []*lsm.Index) {
 
 	log.Printf("写入: %d.%d.sst \n", 0, t.memTable.seqNo)
 
@@ -22,7 +21,10 @@ func (t *ImmutableTable) FlushMemTable() (int64, []byte, []*lsm.Index) {
 	for it.Next() {
 		t.writer.Append(it.Key, it.Value)
 	}
-	return t.writer.Finish()
+
+	size, filter, index = t.writer.Finish()
+	t.memTable.wal.Finish()
+	return
 }
 
 func NewImmutableMemTable(dir string, memTable *MemTable) *ImmutableTable {

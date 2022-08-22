@@ -20,7 +20,7 @@ type Tree struct {
 	dir            string
 	tree           [][]*Node
 	seqNo          []int
-	compactionChan chan int
+	CompactionChan chan int
 }
 
 func (t *Tree) Insert(ln *Node) {
@@ -54,7 +54,7 @@ func (t *Tree) Insert(ln *Node) {
 	}
 }
 
-func (t *Tree) AddNode(level, seqNo int, size int64, filter []byte, index []*Index) *Node {
+func (t *Tree) AddNode(level, seqNo int, size int64, filter map[uint64][]byte, index []*Index) *Node {
 
 	fd := OpenFile(t.dir, os.O_RDONLY, level, seqNo)
 	var ln *Node
@@ -74,6 +74,7 @@ func (t *Tree) AddNode(level, seqNo int, size int64, filter []byte, index []*Ind
 		if ln.Load() != nil {
 			return nil
 		}
+		t.Insert(ln)
 	} else {
 		ln = &Node{
 			sr:       NewSstReader(fd),
@@ -86,10 +87,10 @@ func (t *Tree) AddNode(level, seqNo int, size int64, filter []byte, index []*Ind
 			startKey: index[0].Key,
 			endKey:   index[len(index)-1].Key,
 		}
-	}
+		t.Insert(ln)
 
-	t.Insert(ln)
-	t.compactionChan <- level
+		t.CompactionChan <- level
+	}
 
 	return ln
 }
@@ -268,7 +269,7 @@ func (t *Tree) CheckCompaction() {
 	}
 
 	for {
-		lv := <-t.compactionChan
+		lv := <-t.CompactionChan
 
 		// log.Printf("检查Level : %d是否可合并,待执行检查数量 : %d", lv, len(lt.compactionChan))
 
@@ -306,7 +307,7 @@ func NewTree(dir string) *Tree {
 		dir:            dir,
 		tree:           levelTree,
 		seqNo:          seqNos,
-		compactionChan: compactionChan,
+		CompactionChan: compactionChan,
 	}
 
 	// for i:=0;i< runtime.NumCPU() -1;i++{

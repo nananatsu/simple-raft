@@ -48,10 +48,10 @@ func (r *WalReader) Next() ([]byte, []byte) {
 				r.data = r.block[7 : length+7]
 				r.buf = bytes.NewBuffer(r.data)
 			case kFirst:
-				r.data = r.block[7 : length+7]
+				r.data = r.block[7:]
 			case kMiddle:
 				if prevBlockType == kMiddle || prevBlockType == kFirst {
-					r.data = append(r.data, r.block[7:length+7]...)
+					r.data = append(r.data, r.block[7:]...)
 				}
 			case kLast:
 				if prevBlockType == kMiddle || prevBlockType == kFirst {
@@ -61,6 +61,7 @@ func (r *WalReader) Next() ([]byte, []byte) {
 			}
 			prevBlockType = blockType
 		} else {
+			log.Println("预写日志校验失败")
 			if prevBlockType == kMiddle || prevBlockType == kLast {
 				r.buf = bytes.NewBuffer(r.data)
 			}

@@ -50,14 +50,16 @@ func (d *Block) Append(key, value []byte) {
 	d.nEntries++
 }
 
-func (d *Block) FlushBlockTo(dest io.Writer) (int, error) {
+func (d *Block) FlushBlockTo(dest io.Writer) (uint64, error) {
 
 	defer d.clear()
 
 	buf4 := make([]byte, 4)
 	binary.LittleEndian.PutUint32(buf4, uint32(d.trailer.Len())/4)
 	d.trailer.Write(buf4)
-	return dest.Write(d.compress())
+
+	n, err := dest.Write(d.compress())
+	return uint64(n), err
 }
 
 func (d *Block) compress() []byte {
@@ -70,11 +72,12 @@ func (d *Block) compress() []byte {
 	}
 
 	compressed := snappy.Encode(d.compressionScratch, d.record.Bytes())
+	crc := utils.Checksum(compressed)
 
 	size := len(compressed)
 	compressed = compressed[:size+blockTrailerlen]
 
-	binary.LittleEndian.PutUint32(compressed[size:], utils.Checksum(compressed))
+	binary.LittleEndian.PutUint32(compressed[size:], crc)
 
 	return compressed
 }

@@ -96,8 +96,6 @@ func NewTable(dir string) *Table {
 	maxSeqNo := 0
 	for _, entry := range entries {
 
-		log.Println(entry)
-
 		level, seqNo, fileType, fileInfo := CheckFiles(entry)
 
 		if level == -1 {
@@ -114,12 +112,11 @@ func NewTable(dir string) *Table {
 		}
 
 		if fileType == "sst" {
-
 			if level < lsm.MaxLevel {
 				lt.AddNode(level, seqNo, fileInfo.Size(), nil, nil)
 			}
 		} else if fileType == "wal" {
-			menTable := NewMemTable(dir, seqNo)
+			memTable := NewMemTable(dir, seqNo)
 			r := wal.NewWalReader(path.Join(dir, entry.Name()))
 
 			for {
@@ -127,11 +124,13 @@ func NewTable(dir string) *Table {
 				if k == nil {
 					break
 				}
-				menTable.Put(k, v)
+				memTable.Put(k, v)
 			}
-			immutableTables = append(immutableTables, NewImmutableMemTable(dir, menTable))
+			immutableTables = append(immutableTables, NewImmutableMemTable(dir, memTable))
 		}
 	}
+
+	lt.CompactionChan <- 0
 
 	table := &Table{dir: dir, memTable: NewMemTable(dir, maxSeqNo+1), immutableTable: immutableTables, lsmTree: lt}
 

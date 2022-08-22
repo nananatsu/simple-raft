@@ -9,7 +9,7 @@ import (
 type Node struct {
 	sr *SstReader
 
-	filter   []byte
+	filter   map[uint64][]byte
 	startKey []byte
 	endKey   []byte
 	index    []*Index
@@ -58,6 +58,7 @@ func (n *Node) NextRecord() ([]byte, []byte) {
 		data, err := n.sr.ReadBlock(n.index[n.curBlock].Offset, n.index[n.curBlock].Size)
 
 		if err != nil {
+			log.Println("读取记录失败", err)
 			return nil, nil
 		}
 
@@ -78,28 +79,23 @@ func (n *Node) NextRecord() ([]byte, []byte) {
 	return n.NextRecord()
 }
 
-func (n *Node) HasKey(key []byte) bool {
-
-	if !filter.Contains(n.filter, key) {
-		return false
-	}
-
-	if bytes.Compare(key, n.startKey) >= 0 && bytes.Compare(key, n.endKey) <= 0 {
-		return true
-	}
-
-	return false
-}
-
 func (n *Node) Get(key []byte) []byte {
 
-	if !n.HasKey(key) {
+	if bytes.Compare(key, n.startKey) < 0 || bytes.Compare(key, n.endKey) > 0 {
 		return nil
 	}
 
-	for _, indexMeata := range n.index[1:] {
-		if bytes.Compare(key, indexMeata.Key) <= 0 {
-			data, err := n.sr.ReadBlock(indexMeata.Offset, indexMeata.Size)
+	for _, index := range n.index[1:] {
+
+		f := n.filter[index.Offset]
+
+		if !filter.Contains(f, key) {
+			continue
+		}
+
+		if bytes.Compare(key, index.Key) <= 0 {
+
+			data, err := n.sr.ReadBlock(index.Offset, index.Size)
 			if err != nil {
 				return nil
 			}

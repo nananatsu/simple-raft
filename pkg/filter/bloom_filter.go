@@ -59,6 +59,14 @@ func (b *BloomFilter) Size() int {
 	return int(n * b.bitsPerKey)
 }
 
+func (b *BloomFilter) KeyLen() int {
+	return len(b.hashKeys)
+}
+
+func (b *BloomFilter) Reset() {
+	b.hashKeys = b.hashKeys[:0]
+}
+
 func NewBloomFilter(bitsPerKey int) *BloomFilter {
 
 	return &BloomFilter{
