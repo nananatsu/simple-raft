@@ -9,6 +9,7 @@ import (
 	"path"
 	"strconv"
 	"sync"
+	"time"
 )
 
 const (
@@ -41,10 +42,20 @@ func (w *WalWriter) Write(key, value []byte) {
 	copy(b[n+len(key):], value)
 
 	size := walBlockSize - w.buf.Len()
-
-	var blockType uint8
 	if size < length {
 		w.buf.Write(b[:size])
+		w.PaddingBlock(size - length)
+		w.buf.Write(b[size:])
+	} else {
+		w.buf.Write(b)
+		w.PaddingBlock(size - length)
+	}
+}
+
+func (w *WalWriter) PaddingBlock(remian int) {
+
+	var blockType uint8
+	if remian < 0 {
 		if w.prevBlockType == kFirst || w.prevBlockType == kMiddle {
 			blockType = kMiddle
 		} else {
@@ -52,21 +63,15 @@ func (w *WalWriter) Write(key, value []byte) {
 		}
 		w.WriteBlock(blockType, uint16(w.buf.Len())-7)
 		w.prevBlockType = blockType
-		w.buf.Write(b[size:])
-
-	} else {
-		w.buf.Write(b)
-		remian := size - length
-		if remian < 7 {
-			w.buf.Write(make([]byte, remian))
-			if w.prevBlockType == kFirst || w.prevBlockType == kMiddle {
-				blockType = kLast
-			} else {
-				blockType = kFull
-			}
-			w.WriteBlock(blockType, uint16(w.buf.Len()-remian-7))
-			w.prevBlockType = blockType
+	} else if remian < 7 {
+		w.buf.Write(make([]byte, remian))
+		if w.prevBlockType == kFirst || w.prevBlockType == kMiddle {
+			blockType = kLast
+		} else {
+			blockType = kFull
 		}
+		w.WriteBlock(blockType, uint16(w.buf.Len()-remian-7))
+		w.prevBlockType = blockType
 	}
 }
 
@@ -88,6 +93,18 @@ func (w *WalWriter) Finish() {
 	os.Remove(file)
 }
 
+func (w *WalWriter) Sync() {
+	ticker := time.NewTicker(5 * time.Second)
+	for {
+		<-ticker.C
+		if w.buf.Len() > 7 {
+			w.mu.Lock()
+			w.PaddingBlock(walBlockSize - w.buf.Len())
+			w.mu.Unlock()
+		}
+	}
+}
+
 func NewWalWriter(dir string, seqNo int) *WalWriter {
 
 	fd, err := os.OpenFile(path.Join(dir, strconv.Itoa(0)+"."+strconv.Itoa(seqNo)+".wal"), os.O_WRONLY|os.O_CREATE, 0644)
@@ -96,8 +113,11 @@ func NewWalWriter(dir string, seqNo int) *WalWriter {
 		log.Println("打开预写日志文件失败", err)
 	}
 
-	return &WalWriter{
+	w := &WalWriter{
 		fd:  fd,
 		buf: bytes.NewBuffer(make([]byte, 7)),
 	}
+
+	go w.Sync()
+	return w
 }

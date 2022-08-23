@@ -14,15 +14,14 @@ func TestNewTable(t *testing.T) {
 
 	NewTable(devTestPath)
 
-	timer := time.NewTimer(600 * time.Second)
-	<-timer.C
+	<-time.After(600 * time.Second)
 }
 
 func TestTableGet(t *testing.T) {
 
 	table := NewTable(devTestPath)
 
-	table.Put("hello", "world")
+	table.PutString("hello", "world")
 
 	if table.Get("hello") != "world" {
 		t.Error("数据不一致")
@@ -43,7 +42,7 @@ func TestTableFlush(t *testing.T) {
 	for i := 0; i < 10; i++ {
 		go func(chan int) {
 			for {
-				table.Put(utils.RandStringBytesRmndr(12), utils.RandStringBytesRmndr(rand.Intn(10)+10))
+				table.PutString(utils.RandStringBytesRmndr(12), utils.RandStringBytesRmndr(rand.Intn(10)+10))
 				metricChan <- 1
 			}
 		}(metricChan)

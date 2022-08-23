@@ -21,10 +21,13 @@ type Table struct {
 	lsmTree        *lsm.Tree
 }
 
-func (t *Table) Put(key, value string) {
+func (t *Table) PutString(key, value string) {
+	t.Put([]byte(key), []byte(value))
+}
 
-	t.memTable.Put([]byte(key), []byte(value))
+func (t *Table) Put(key, value []byte) {
 
+	t.memTable.Put(key, value)
 	if t.memTable.Size() > maxMemTableSize {
 		t.flush()
 	}
