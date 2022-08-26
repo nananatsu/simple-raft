@@ -158,6 +158,45 @@ func (s *SkipList) Get(key []byte) []byte {
 
 }
 
+func (s *SkipList) GetMin() (key, value []byte) {
+	node := s.kvNode[nNext]
+	if node != 0 {
+		keyStart := s.kvNode[node]
+		keyEnd := keyStart + s.kvNode[node+nKey]
+		valueEnd := keyEnd + s.kvNode[node+nVal]
+
+		key = s.kvData[keyStart:keyEnd]
+		value = s.kvData[keyEnd:valueEnd]
+	}
+	return
+}
+
+func (s *SkipList) GetMax() (key, value []byte) {
+	n := 0
+	h := s.maxHeight - 1
+
+	for {
+		next := s.kvNode[n+nNext+h]
+
+		if next != 0 {
+			n = next
+		} else {
+			s.prevNode[h] = n
+			if h > 0 {
+				h--
+			} else {
+				keyStart := s.kvNode[n]
+				keyEnd := keyStart + s.kvNode[n+nKey]
+				valueEnd := keyEnd + s.kvNode[n+nVal]
+
+				key = s.kvData[keyStart:keyEnd]
+				value = s.kvData[keyEnd:valueEnd]
+				return
+			}
+		}
+	}
+}
+
 func (s *SkipList) Size() int {
 	return s.kvSize
 }

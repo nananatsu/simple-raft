@@ -291,6 +291,59 @@ func (t *Tree) Get(key []byte) (value []byte) {
 	return
 }
 
+func (t *Tree) GetMinKey() (key []byte) {
+
+	for i := len(t.tree) - 1; i >= 0; i-- {
+		if (len(t.tree[i])) == 0 {
+			continue
+		}
+		if key == nil {
+			key = t.tree[i][0].startKey
+		}
+
+		if bytes.Compare(t.tree[i][0].startKey, key) < 0 {
+			key = t.tree[i][0].startKey
+		}
+
+		if i == 0 {
+			for _, n := range t.tree[i][1:] {
+				if bytes.Compare(n.startKey, key) < 0 {
+					key = n.startKey
+				}
+			}
+		}
+	}
+
+	return
+}
+
+func (t *Tree) GetMaxKey() (key []byte) {
+
+	for i := len(t.tree) - 1; i >= 0; i-- {
+
+		if (len(t.tree[i])) == 0 {
+			continue
+		}
+
+		if key == nil {
+			key = t.tree[i][len(t.tree[i])-1].endKey
+		}
+
+		if bytes.Compare(t.tree[i][len(t.tree[i])-1].endKey, key) > 0 {
+			key = t.tree[i][len(t.tree[i])-1].endKey
+		}
+
+		if i == 0 {
+			for _, n := range t.tree[0][1:] {
+				if bytes.Compare(n.endKey, key) > 0 {
+					key = n.endKey
+				}
+			}
+		}
+	}
+	return
+}
+
 func NewTree(dir string) *Tree {
 
 	compactionChan := make(chan int, 100)

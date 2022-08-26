@@ -79,6 +79,12 @@ func (r *WalReader) Next() ([]byte, []byte) {
 
 }
 
+func (r *WalReader) Close() {
+	r.fd.Close()
+	r.block = nil
+	r.data = nil
+}
+
 func NewWalReader(walFile string) *WalReader {
 
 	fd, err := os.OpenFile(walFile, os.O_RDONLY, 0644)
