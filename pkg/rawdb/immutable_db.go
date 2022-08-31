@@ -2,7 +2,6 @@ package rawdb
 
 import (
 	"kvdb/pkg/lsm"
-	"kvdb/pkg/skiplist"
 	"log"
 	"os"
 )
@@ -14,9 +13,9 @@ type ImmutableDB struct {
 
 func (idb *ImmutableDB) Flush() (size int64, filter map[uint64][]byte, index []*lsm.Index) {
 
-	log.Printf("写入: %d.%d.sst \n", 0, idb.memdb.seqNo)
+	log.Printf("写入: %d.%d.sst \n", 0, idb.memdb.SeqNo)
 
-	it := skiplist.NewSkipListIter(idb.memdb.db)
+	it := idb.memdb.GenerateIterator()
 
 	for it.Next() {
 		idb.writer.Append(it.Key, it.Value)
@@ -29,7 +28,7 @@ func (idb *ImmutableDB) Flush() (size int64, filter map[uint64][]byte, index []*
 
 func NewImmutableMemDB(dir string, memDB *MemDB) *ImmutableDB {
 
-	fd := lsm.OpenFile(dir, os.O_WRONLY|os.O_CREATE, 0, memDB.seqNo)
+	fd := lsm.OpenFile(dir, os.O_WRONLY|os.O_CREATE, 0, memDB.SeqNo)
 
 	immutableDB := &ImmutableDB{
 		memdb:  memDB,

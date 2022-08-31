@@ -1,17 +1,21 @@
 package raft
 
 import (
+	pb "kvdb/pkg/raftpb"
+
 	"go.uber.org/zap"
 )
 
-type LogEntry struct {
-	Term  uint64
-	Index uint64
-	Data  []byte
-}
+const maxAppendEntriesSize = 1000
+
+// type pb.LogEntry struct {
+// 	Term  uint64
+// 	Index uint64
+// 	Data  []byte
+// }
 
 type RaftLog struct {
-	logs    []*LogEntry
+	logs    []*pb.LogEntry
 	storage Storage
 
 	commitIndex     uint64
@@ -21,13 +25,20 @@ type RaftLog struct {
 	logger *zap.SugaredLogger
 }
 
-func (l *RaftLog) GetEntries(index uint64) []*LogEntry {
+func (l *RaftLog) GetEntries(index uint64) []*pb.LogEntry {
+	var entries []*pb.LogEntry
 	for i, entry := range l.logs {
 		if entry.Index == index {
-			return l.logs[i:]
+			entries = l.logs[i:]
+			break
 		}
 	}
-	return l.logs[:0]
+
+	if len(entries) > maxAppendEntriesSize {
+		entries = entries[:maxAppendEntriesSize]
+	}
+
+	return entries
 
 }
 
@@ -46,7 +57,17 @@ func (l *RaftLog) GetTerm(index uint64) uint64 {
 	return l.storage.GetTerm(index)
 }
 
-func (l *RaftLog) AppendEntry(entry []*LogEntry) {
+func (l *RaftLog) AppendEntry(entry []*pb.LogEntry) {
+
+	size := len(entry)
+
+	if size == 0 {
+		return
+	}
+
+	if size > 1000 {
+		l.logger.Debugf("添加日志: %d - %d", entry[0].Index, entry[size-1].Index)
+	}
 
 	l.logs = append(l.logs, entry...)
 }
@@ -59,27 +80,43 @@ func (l *RaftLog) HasPrevLog(lastIndex, lastTerm uint64) bool {
 	return l.GetTerm(lastIndex) == lastTerm
 }
 
-func (l *RaftLog) RemoveConflictLog(entries []*LogEntry) {
+func (l *RaftLog) RemoveConflictLog(entries []*pb.LogEntry) []*pb.LogEntry {
 
-	if len(entries) == 0 {
-		return
+	appendSize := len(entries)
+	logSize := len(l.logs)
+	if appendSize == 0 || logSize == 0 {
+		return entries
 	}
-	entry := entries[0]
 
-	conflictIdx := len(l.logs)
-	for i := len(l.logs) - 1; i >= 0; i-- {
-		if entry.Index == l.logs[i].Index && entry.Term != l.logs[i].Term {
-			conflictIdx = i
+	conflictIdx := appendSize
+	exsitIdx := -1
+	prevIdx := -1
+	for n, entry := range entries {
+		for i := prevIdx + 1; i < logSize; i++ {
+			le := l.logs[i]
+			if entry.Index == le.Index {
+				if entry.Term != le.Term {
+					conflictIdx = i
+					break
+				} else {
+					exsitIdx = n
+					break
+				}
+			}
+			prevIdx = i
 		}
-		if entry.Index > l.logs[i].Index {
+		if conflictIdx != appendSize {
+			l.logger.Debugf("删除冲突日志 %d ~ %d", l.logs[conflictIdx].Index, l.logs[appendSize-1].Index)
+			l.logs = l.logs[:conflictIdx]
 			break
 		}
 	}
 
-	if conflictIdx != len(l.logs) {
-		l.logger.Debugf("删除冲突日志 %d", conflictIdx)
-		l.logs = l.logs[:conflictIdx]
+	if exsitIdx == -1 {
+		return entries
 	}
+	l.logger.Debugf("修剪entry中已存在日志 %d ~ %d ", entries[0].Index, entries[exsitIdx].Index)
+	return entries[exsitIdx+1:]
 }
 
 func (l *RaftLog) Apply(lastCommit, lastLogIndex uint64) {
@@ -94,7 +131,7 @@ func (l *RaftLog) Apply(lastCommit, lastLogIndex uint64) {
 	if l.commitIndex > l.lastApplied {
 		n := 0
 		for i, entry := range l.logs {
-			if l.commitIndex <= entry.Index {
+			if l.commitIndex >= entry.Index {
 				n = i
 			} else {
 				break
@@ -102,6 +139,11 @@ func (l *RaftLog) Apply(lastCommit, lastLogIndex uint64) {
 		}
 
 		entries := l.logs[:n+1]
+
+		if n > 100 {
+			l.logger.Debugf("最后提交： %d ,已提交 %d ,提交日志: %d - %d", lastCommit, l.lastApplied, entries[0].Index, entries[len(entries)-1].Index)
+		}
+
 		l.storage.Append(entries)
 		l.lastApplied = l.logs[n].Index
 		l.lastAppliedTerm = l.logs[n].Term
@@ -118,6 +160,7 @@ func (l *RaftLog) GetLastLogIndexAndTerm() (lastLogIndex, lastLogTerm uint64) {
 		lastLogIndex = l.lastApplied
 		lastLogTerm = l.lastAppliedTerm
 	}
+	// l.logger.Debugf("lastLogIndex: %d, lastLogTerm: %d, log size: %d", lastLogIndex, lastLogTerm, len(l.logs))
 
 	return
 }
@@ -125,7 +168,7 @@ func (l *RaftLog) GetLastLogIndexAndTerm() (lastLogIndex, lastLogTerm uint64) {
 func NewRaftLog(storage Storage, logger *zap.SugaredLogger) *RaftLog {
 
 	return &RaftLog{
-		logs:    make([]*LogEntry, 0),
+		logs:    make([]*pb.LogEntry, 0),
 		storage: storage,
 		logger:  logger,
 	}

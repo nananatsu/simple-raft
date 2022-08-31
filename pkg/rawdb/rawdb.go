@@ -1,15 +1,12 @@
 package rawdb
 
 import (
-	"bytes"
 	"io/fs"
 	"kvdb/pkg/lsm"
-	"log"
-	"os"
-	"path"
-	"strconv"
-	"strings"
+	"kvdb/pkg/utils"
 	"sync"
+
+	"go.uber.org/zap"
 )
 
 type DB struct {
@@ -19,6 +16,8 @@ type DB struct {
 	memdb   *MemDB
 	immdb   []*ImmutableDB
 	lsmTree *lsm.Tree
+
+	logger *zap.SugaredLogger
 }
 
 func (db *DB) Put(key, value []byte) {
@@ -63,7 +62,7 @@ func (db *DB) flush() error {
 
 	immdb := NewImmutableMemDB(db.dir, db.memdb)
 	db.immdb = append(db.immdb, immdb)
-	db.memdb = NewMemDB(db.dir, db.memdb.seqNo+1)
+	db.memdb = NewMemDB(db.dir, db.memdb.SeqNo+1, db.logger)
 
 	if len(db.immdb) > 5 {
 		db.immdb = db.immdb[len(db.immdb)-5:]
@@ -71,90 +70,47 @@ func (db *DB) flush() error {
 
 	go func() {
 		size, filter, index := immdb.Flush()
-		db.lsmTree.AddNode(0, immdb.memdb.seqNo, size, filter, index)
+		db.lsmTree.AddNode(0, immdb.memdb.SeqNo, size, filter, index)
 	}()
 
 	return nil
 }
 
-func (db *DB) GetMinKey() (key []byte) {
-	minTreeKey := db.lsmTree.GetMinKey()
-	minMemKey, _ := db.memdb.db.GetMin()
-
-	if minMemKey == nil && minTreeKey != nil {
-		key = minTreeKey
-	} else if minMemKey != nil && minTreeKey == nil {
-		key = minMemKey
-	} else if bytes.Compare(minMemKey, minTreeKey) < 0 {
-		key = minMemKey
-	} else {
-		key = minTreeKey
-	}
-
-	return
-}
-
-func (db *DB) GetMaxKey() (key []byte) {
-	maxTreeKey := db.lsmTree.GetMaxKey()
-	maxMemKey, _ := db.memdb.db.GetMax()
-
-	if maxTreeKey == nil && maxMemKey != nil {
-		key = maxMemKey
-	} else if maxTreeKey != nil && maxMemKey == nil {
-		key = maxTreeKey
-	} else if bytes.Compare(maxMemKey, maxTreeKey) < 0 {
-		key = maxTreeKey
-	} else {
-		key = maxMemKey
-	}
-
-	return
-}
-
-func NewRawDB(dir string) *DB {
+func NewRawDB(dir string, logger *zap.SugaredLogger) *DB {
 
 	lt := lsm.NewTree(dir)
-
-	entries, err := os.ReadDir(dir)
-
-	if err != nil {
-		log.Println("打开db文件夹失败", err)
-	}
-
 	immutableDBs := make([]*ImmutableDB, 0)
 	memdbs := make([]*MemDB, 0)
 
 	maxSeqNo := 0
-	for _, entry := range entries {
-
-		level, seqNo, fileType, fileInfo := CheckFiles(entry)
-
-		if level == -1 {
-			continue
-		}
-
-		if fileInfo.Size() == 0 {
-			os.Remove(path.Join(dir, entry.Name()))
-			continue
-		}
-
-		if level == 0 && seqNo > maxSeqNo {
-			maxSeqNo = seqNo
-		}
-
-		if fileType == "sst" {
-			if level < lsm.MaxLevel {
-				lt.AddNode(level, seqNo, fileInfo.Size(), nil, nil)
+	callbacks := []func(int, int, string, fs.FileInfo){
+		func(level, seqNo int, subfix string, info fs.FileInfo) {
+			if level == 0 && seqNo > maxSeqNo {
+				maxSeqNo = seqNo
 			}
-		} else if fileType == "wal" {
-			memdbs = append(memdbs, RestoreMemDB(path.Join(dir, entry.Name()), dir, seqNo))
-		}
+		},
+		func(level, seqNo int, subfix string, info fs.FileInfo) {
+			if subfix == "sst" && level < lsm.MaxLevel {
+				if level < lsm.MaxLevel {
+					lt.AddNode(level, seqNo, info.Size(), nil, nil)
+				}
+			}
+		},
+		func(level, seqNo int, subfix string, info fs.FileInfo) {
+			if subfix == "wal" {
+				memdbs = append(memdbs, RestoreMemDB(dir, seqNo, logger))
+			}
+		},
+	}
+
+	if err := utils.CheckDir(dir, callbacks); err != nil {
+		logger.Infof("打开db文件夹失败", err)
 	}
 
 	var memdb *MemDB
 	if len(memdbs) > 0 {
 		for _, md := range memdbs {
-			if md.seqNo == maxSeqNo {
+			if md.SeqNo == maxSeqNo {
 				memdb = md
 			} else {
 				immutableDBs = append(immutableDBs, NewImmutableMemDB(dir, md))
@@ -163,7 +119,7 @@ func NewRawDB(dir string) *DB {
 	}
 
 	if memdb == nil {
-		memdb = NewMemDB(dir, maxSeqNo+1)
+		memdb = NewMemDB(dir, maxSeqNo+1, logger)
 	}
 
 	lt.CompactionChan <- 0
@@ -174,43 +130,10 @@ func NewRawDB(dir string) *DB {
 		for _, it := range db.immdb {
 			if it.memdb.Size() > 0 {
 				size, filter, index := it.Flush()
-				db.lsmTree.AddNode(0, it.memdb.seqNo, size, filter, index)
+				db.lsmTree.AddNode(0, it.memdb.SeqNo, size, filter, index)
 			}
 		}
 	}
 
 	return db
-}
-
-func CheckFiles(entry fs.DirEntry) (int, int, string, fs.FileInfo) {
-
-	if entry.IsDir() {
-		return -1, -1, "", nil
-	}
-
-	levelNodeInfo := strings.Split(entry.Name(), ".")
-
-	if len(levelNodeInfo) != 3 {
-		return -1, -1, "", nil
-	}
-
-	level, err := strconv.Atoi(levelNodeInfo[0])
-
-	if err != nil {
-		return -1, -1, "", nil
-	}
-
-	seqNo, err := strconv.Atoi(levelNodeInfo[1])
-
-	if err != nil {
-		return -1, -1, "", nil
-	}
-
-	fileInfo, err := entry.Info()
-
-	if err != nil {
-		return -1, -1, "", nil
-	}
-
-	return level, seqNo, levelNodeInfo[2], fileInfo
 }

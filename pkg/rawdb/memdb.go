@@ -3,14 +3,21 @@ package rawdb
 import (
 	"kvdb/pkg/skiplist"
 	"kvdb/pkg/wal"
+	"path"
+	"strconv"
+
+	"go.uber.org/zap"
 )
 
 const maxMemDBSize = 4096 * 1024
 
 type MemDB struct {
-	seqNo int
+	SeqNo int
+	Dir   string
 	db    *skiplist.SkipList
 	walw  *wal.WalWriter
+
+	logger *zap.SugaredLogger
 }
 
 func (mdb *MemDB) Get(key []byte) []byte {
@@ -24,6 +31,18 @@ func (mdb *MemDB) Put(key, value []byte) {
 	mdb.db.Put(key, value)
 }
 
+func (mdb *MemDB) GenerateIterator() *skiplist.SkipListIter {
+	return skiplist.NewSkipListIter(mdb.db)
+}
+
+func (mdb *MemDB) GetMin() ([]byte, []byte) {
+	return mdb.db.GetMin()
+}
+
+func (mdb *MemDB) GetMax() ([]byte, []byte) {
+	return mdb.db.GetMax()
+}
+
 func (mdb *MemDB) Size() int {
 	return mdb.db.Size()
 }
@@ -32,7 +51,9 @@ func (mdb *MemDB) Finish() {
 	mdb.walw.Finish()
 }
 
-func RestoreMemDB(walFile string, dir string, seqNo int) *MemDB {
+func RestoreMemDB(dir string, seqNo int, logger *zap.SugaredLogger) *MemDB {
+
+	walFile := path.Join(dir, strconv.Itoa(0)+"."+strconv.Itoa(seqNo)+".wal")
 
 	sl := skiplist.NewSkipList()
 	r := wal.NewWalReader(walFile)
@@ -46,22 +67,27 @@ func RestoreMemDB(walFile string, dir string, seqNo int) *MemDB {
 		sl.Put(k, v)
 	}
 
-	w := wal.NewWalWriter(dir, seqNo)
+	w := wal.NewWalWriter(walFile, logger)
 	w.PaddingFile()
 
 	return &MemDB{
-		seqNo: seqNo,
-		db:    sl,
-		walw:  w,
+		SeqNo:  seqNo,
+		db:     sl,
+		walw:   w,
+		logger: logger,
 	}
 }
 
-func NewMemDB(dir string, seqNo int) *MemDB {
+func NewMemDB(dir string, seqNo int, logger *zap.SugaredLogger) *MemDB {
 
-	w := wal.NewWalWriter(dir, seqNo)
+	walFile := path.Join(dir, strconv.Itoa(0)+"."+strconv.Itoa(seqNo)+".wal")
+
+	w := wal.NewWalWriter(walFile, logger)
 	return &MemDB{
-		seqNo: seqNo,
-		db:    skiplist.NewSkipList(),
-		walw:  w,
+		SeqNo:  seqNo,
+		Dir:    dir,
+		db:     skiplist.NewSkipList(),
+		walw:   w,
+		logger: logger,
 	}
 }

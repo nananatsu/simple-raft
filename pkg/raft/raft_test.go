@@ -2,7 +2,7 @@ package raft
 
 import (
 	"kvdb/pkg/utils"
-	"math/rand"
+	"log"
 	"strconv"
 	"testing"
 	"time"
@@ -11,17 +11,20 @@ import (
 )
 
 func TestNewRaft(t *testing.T) {
+
 	peers := make([]*Peer, 3)
 	for i := 0; i < 3; i++ {
 		peers[i] = &Peer{
-			Id:    uint64(i + 1),
-			Recvc: make(chan Message, 1000),
+			Id: uint64(i + 1),
 		}
 	}
 	for i := 0; i < 3; i++ {
-		storage := NewRaftStorage("../../build/raft_" + strconv.Itoa(i))
+		id := "raft_" + strconv.Itoa(i)
+		logger := utils.GetLogger("../../build/" + id)
+		sugar := logger.Sugar()
+		storage := NewRaftStorage("../../build/raft_"+strconv.Itoa(i), sugar)
 		go func(idx int) {
-			NewRaft(uint64(idx+1), peers[idx].Recvc, storage, peers, nil)
+			NewRaft(uint64(idx+1), storage, peers, sugar)
 		}(i)
 	}
 
@@ -30,39 +33,55 @@ func TestNewRaft(t *testing.T) {
 }
 
 func TestNewRaftPropose(t *testing.T) {
-	var node *Raft
 
 	peers := make([]*Peer, 3)
 	for i := 0; i < 3; i++ {
 		peers[i] = &Peer{
-			Id:    uint64(i + 1),
-			Recvc: make(chan Message, 1000),
+			Id: uint64(i + 1),
 		}
 	}
+
+	metricChan := make(chan int, 10000)
 	for i := 0; i < 3; i++ {
 
 		id := "raft_" + strconv.Itoa(i)
 
-		storage := NewRaftStorage("../../build/raft_" + strconv.Itoa(i))
 		logger := utils.GetLogger("../../build/" + id)
 		sugar := logger.Sugar()
+		storage := NewRaftStorage("../../build/raft_"+strconv.Itoa(i), sugar)
 
 		go func(idx int, logger *zap.SugaredLogger) {
-			node = NewRaft(uint64(idx+1), peers[idx].Recvc, storage, peers, logger)
+			node := NewRaftNode(uint64(idx+1), storage, peers, logger)
+			go func(node *RaftNode) {
+				for {
+					time.Sleep(3 * time.Second)
+					if node.Ready() {
+						for i := 0; i < 1000000; i++ {
+							key := utils.RandStringBytesRmndr(8)
+							value := utils.RandStringBytesRmndr(10)
+							node.Propose(Encode(key, value))
+							metricChan <- 1
+						}
+						break
+					}
+				}
+			}(node)
 		}(i, sugar)
 	}
 
+	ticker := time.NewTicker(1 * time.Second)
+	n := 0
 	for {
-		time.Sleep(time.Second)
-		if node.state == LEADER_STATE || node.leader != 0 {
-			for i := 0; i < 100; i++ {
-				time.Sleep(time.Duration(rand.Intn(100)) * time.Millisecond)
-				node.Propose([]byte(utils.RandStringBytesRmndr(10)))
+		select {
+		case <-metricChan:
+			n++
+		case <-ticker.C:
+			if n > 0 {
+				log.Println("处理数据条数：", n)
 			}
-			break
+
+			n = 0
 		}
 	}
-
-	<-time.After(600 * time.Second)
 
 }

@@ -1,21 +1,25 @@
 package raft
 
 import (
-	"encoding/binary"
-	"log"
 	"strconv"
 	"testing"
+
+	"go.uber.org/zap"
 )
 
 func TestStorage(t *testing.T) {
+	logger, _ := zap.NewDevelopment()
+	sugar := logger.Sugar()
+	defer sugar.Sync()
 
 	for i := 0; i < 1; i++ {
-		storage := NewRaftStorage("../../build/raft_" + strconv.Itoa(i))
 
-		minI, _ := binary.Uvarint(storage.GetFirstIndex())
+		storage := NewRaftStorage("../../build/raft_"+strconv.Itoa(i), sugar)
 
-		maxI, _ := binary.Uvarint(storage.GetLastIndex())
-		log.Println(minI, maxI)
+		minIndex, _ := storage.GetFirst()
+		maxIndex, _ := storage.GetLast()
+
+		sugar.Infoln(minIndex, maxIndex)
 	}
 
 }

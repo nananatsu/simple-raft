@@ -6,10 +6,10 @@ import (
 	"kvdb/pkg/utils"
 	"log"
 	"os"
-	"path"
-	"strconv"
 	"sync"
 	"time"
+
+	"go.uber.org/zap"
 )
 
 const (
@@ -22,13 +22,14 @@ const (
 const walFlushInterval = 10 * time.Second
 
 type WalWriter struct {
-	mu sync.Mutex
+	mu sync.RWMutex
 
 	fd            *os.File
 	header        [20]byte
 	buf           *bytes.Buffer
 	prevBlockType uint8
 	ticker        *time.Ticker
+	logger        *zap.SugaredLogger
 }
 
 func (w *WalWriter) Write(key, value []byte) {
@@ -122,17 +123,18 @@ func (w *WalWriter) Sync() {
 	}
 }
 
-func NewWalWriter(dir string, seqNo int) *WalWriter {
+func NewWalWriter(walFile string, logger *zap.SugaredLogger) *WalWriter {
 
-	fd, err := os.OpenFile(path.Join(dir, strconv.Itoa(0)+"."+strconv.Itoa(seqNo)+".wal"), os.O_APPEND|os.O_WRONLY|os.O_CREATE, 0644)
+	fd, err := os.OpenFile(walFile, os.O_APPEND|os.O_WRONLY|os.O_CREATE, 0644)
 
 	if err != nil {
 		log.Println("打开预写日志文件失败", err)
 	}
 
 	w := &WalWriter{
-		fd:  fd,
-		buf: bytes.NewBuffer(make([]byte, 7)),
+		fd:     fd,
+		buf:    bytes.NewBuffer(make([]byte, 7)),
+		logger: logger,
 	}
 	go w.Sync()
 

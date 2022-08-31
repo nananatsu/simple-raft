@@ -1,0 +1,36 @@
+syntax = "proto3";
+package raftpb;
+option go_package = "kvdb/pkg/raftpb";
+
+service RaftInternal {
+  rpc send(stream RaftMessage) returns (stream RaftMessage) {}
+}
+
+enum MessageType {
+  VOTE = 0;
+  VOTE_RES = 1;
+  HEARTBEAT = 2;
+  HEARTBEAT_RESP = 3;
+  APPEND_ENTRY = 4;
+  APPEND_ENTRY_RESP = 5;
+  PROPOSE = 6;
+  PROPOSE_RESP = 7;
+}
+
+message LogEntry {
+  uint64 Term = 1;
+  uint64 Index = 2;
+  bytes Data = 3;
+}
+
+message RaftMessage {
+  MessageType MsgType = 1;
+  uint64 Term = 2;
+  uint64 From = 3;
+  uint64 To = 4;
+  uint64 LastLogIndex = 5;
+  uint64 LastLogTerm = 6;
+  uint64 LastCommit = 7;
+  repeated LogEntry Entry = 8;
+  bool Success = 9;
+}

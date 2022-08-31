@@ -2,6 +2,7 @@ package utils
 
 import (
 	"io"
+	"log"
 	"os"
 	"path"
 
@@ -11,9 +12,13 @@ import (
 
 func GetLogger(dir string) *zap.Logger {
 
+	if _, err := os.Stat(dir); err != nil {
+		os.Mkdir(dir, os.ModePerm)
+	}
+
 	file, err := os.OpenFile(path.Join(dir, "log.log"), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0666)
 	if err != nil {
-		zap.L().Sugar().Error("打开日志文件失败", err)
+		log.Println("打开日志文件失败", err)
 	}
 
 	encoderConfig := zap.NewProductionEncoderConfig()

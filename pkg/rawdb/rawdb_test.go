@@ -7,13 +7,19 @@ import (
 	"math/rand"
 	"testing"
 	"time"
+
+	"go.uber.org/zap"
 )
 
 const devTestPath = "../../build/sst"
 
 func TestNewRawDB(t *testing.T) {
 
-	db := NewRawDB(devTestPath)
+	logger, _ := zap.NewDevelopment()
+	sugar := logger.Sugar()
+	defer sugar.Sync()
+
+	db := NewRawDB(devTestPath, sugar)
 
 	db.Put([]byte("hello"), []byte("world"))
 
@@ -21,8 +27,11 @@ func TestNewRawDB(t *testing.T) {
 }
 
 func TestRawDBGet(t *testing.T) {
+	logger, _ := zap.NewDevelopment()
+	sugar := logger.Sugar()
+	defer sugar.Sync()
 
-	db := NewRawDB(devTestPath)
+	db := NewRawDB(devTestPath, sugar)
 
 	db.Put([]byte("hello"), []byte("world"))
 
@@ -37,10 +46,13 @@ func TestRawDBGet(t *testing.T) {
 }
 
 func TestRawDBFlush(t *testing.T) {
+	logger, _ := zap.NewDevelopment()
+	sugar := logger.Sugar()
+	defer sugar.Sync()
 
 	metricChan := make(chan int, 10000)
 
-	db := NewRawDB(devTestPath)
+	db := NewRawDB(devTestPath, sugar)
 
 	for i := 0; i < 10; i++ {
 		go func(chan int) {
@@ -66,7 +78,11 @@ func TestRawDBFlush(t *testing.T) {
 
 func TestCompactionRawDB(t *testing.T) {
 
-	db := NewRawDB(devTestPath)
+	logger, _ := zap.NewDevelopment()
+	sugar := logger.Sugar()
+	defer sugar.Sync()
+
+	db := NewRawDB(devTestPath, sugar)
 
 	db.lsmTree.Compaction(0)
 
