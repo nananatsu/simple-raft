@@ -9,24 +9,25 @@ import (
 	"os"
 	"path"
 	"sync"
+	"time"
 
 	"go.uber.org/zap"
 )
 
-const logSnapShotSize = 4 * 1024 * 1024
+const LastLogKey = "___last___include___"
+const logSnapShotSize = 8 * 1024 * 1024
+const memdbFlushInterval = 10 * time.Second
 
 type Storage interface {
 	Append(entries []*pb.LogEntry)
 	GetTerm(index uint64) uint64
-	GetFirst() (uint64, uint64)
 	GetLast() (uint64, uint64)
 }
 
 type RaftStorage struct {
-	mu sync.RWMutex
-
+	mu         sync.RWMutex
 	db         *rawdb.MemDB
-	snap       *rawdb.DB
+	snap       *Snapshot
 	keyScratch [20]byte
 	logger     *zap.SugaredLogger
 }
@@ -42,9 +43,8 @@ func (rs *RaftStorage) Append(entries []*pb.LogEntry) {
 	}
 
 	if rs.db.Size() > logSnapShotSize {
-		memdb := rs.db
-		rs.Snapshot(memdb)
-		rs.db = rawdb.NewMemDB(memdb.Dir, memdb.SeqNo+1, rs.logger)
+		rs.snap.Add(rs.db)
+		rs.db = rawdb.NewMemDB(&rawdb.MemDBConfig{Dir: rs.db.GetDir(), SeqNo: rs.db.GetSeqNo() + 1, WalFlushInterval: memdbFlushInterval}, rs.logger)
 	}
 }
 
@@ -59,31 +59,14 @@ func (rs *RaftStorage) GetTerm(index uint64) (term uint64) {
 	return
 }
 
-func (rs *RaftStorage) GetFirst() (uint64, uint64) {
-	k, v := rs.db.GetMin()
-	index := binary.BigEndian.Uint64(k)
-	term, _ := binary.Uvarint(v)
-	return index, term
-}
-
 func (rs *RaftStorage) GetLast() (uint64, uint64) {
 	k, v := rs.db.GetMax()
-	index := binary.BigEndian.Uint64(k)
-	term, _ := binary.Uvarint(v)
-	return index, term
-}
-
-func (rs *RaftStorage) Snapshot(memdb *rawdb.MemDB) {
-	if memdb == nil {
-		return
+	if len(k) > 0 {
+		index := binary.BigEndian.Uint64(k)
+		term, _ := binary.Uvarint(v)
+		return index, term
 	}
-
-	it := memdb.GenerateIterator()
-	for it.Next() {
-		rs.snap.Put(Decode(it.Value))
-	}
-
-	memdb.Finish()
+	return rs.snap.latIncludeIndex, rs.snap.lastIncludeTerm
 }
 
 func NewRaftStorage(dir string, logger *zap.SugaredLogger) *RaftStorage {
@@ -91,12 +74,6 @@ func NewRaftStorage(dir string, logger *zap.SugaredLogger) *RaftStorage {
 	if _, err := os.Stat(dir); err != nil {
 		os.Mkdir(dir, os.ModePerm)
 	}
-
-	snapDir := path.Join(dir, "snapshot")
-	if _, err := os.Stat(snapDir); err != nil {
-		os.Mkdir(snapDir, os.ModePerm)
-	}
-	rawdb.NewRawDB(snapDir, logger)
 
 	walDir := path.Join(dir, "wal")
 	if _, err := os.Stat(walDir); err != nil {
@@ -113,7 +90,12 @@ func NewRaftStorage(dir string, logger *zap.SugaredLogger) *RaftStorage {
 		},
 		func(level, seqNo int, subfix string, info fs.FileInfo) {
 			if subfix == "wal" {
-				memdbs = append(memdbs, rawdb.RestoreMemDB(walDir, seqNo, logger))
+				db, err := rawdb.RestoreMemDB(&rawdb.MemDBConfig{Dir: walDir, SeqNo: seqNo, WalFlushInterval: memdbFlushInterval}, logger)
+				if err != nil {
+					logger.Errorf("还原memdb失败:%v", err)
+				} else {
+					memdbs = append(memdbs, db)
+				}
 			}
 		},
 	}
@@ -124,24 +106,23 @@ func NewRaftStorage(dir string, logger *zap.SugaredLogger) *RaftStorage {
 
 	var db *rawdb.MemDB
 	for i, md := range memdbs {
-		if md.SeqNo == maxSeqNo {
+		if md.GetSeqNo() == maxSeqNo {
 			db = md
 			memdbs[i] = nil
 		}
 	}
 	if db == nil {
-		db = rawdb.NewMemDB(walDir, maxSeqNo+1, logger)
+		db = rawdb.NewMemDB(&rawdb.MemDBConfig{Dir: walDir, SeqNo: maxSeqNo + 1, WalFlushInterval: memdbFlushInterval}, logger)
 	}
-
-	snap := rawdb.NewRawDB(snapDir, logger)
 
 	s := &RaftStorage{
 		db:     db,
-		snap:   snap,
+		snap:   NewSnapshot(dir, logger),
 		logger: logger,
 	}
+
 	for _, md := range memdbs {
-		s.Snapshot(md)
+		s.snap.Add(md)
 	}
 	return s
 }

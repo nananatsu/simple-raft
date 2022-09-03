@@ -12,11 +12,9 @@ import (
 
 func TestNewRaft(t *testing.T) {
 
-	peers := make([]*Peer, 3)
+	peers := make([]uint64, 3)
 	for i := 0; i < 3; i++ {
-		peers[i] = &Peer{
-			Id: uint64(i + 1),
-		}
+		peers[i] = uint64(i + 1)
 	}
 	for i := 0; i < 3; i++ {
 		id := "raft_" + strconv.Itoa(i)
@@ -34,11 +32,9 @@ func TestNewRaft(t *testing.T) {
 
 func TestNewRaftPropose(t *testing.T) {
 
-	peers := make([]*Peer, 3)
+	peers := make([]uint64, 3)
 	for i := 0; i < 3; i++ {
-		peers[i] = &Peer{
-			Id: uint64(i + 1),
-		}
+		peers[i] = uint64(i + 1)
 	}
 
 	metricChan := make(chan int, 10000)

@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"kvdb/pkg/utils"
-	"log"
 	"os"
 	"sync"
 
@@ -15,16 +14,14 @@ import (
 )
 
 type SstReader struct {
-	mu sync.RWMutex
-
-	fd     *os.File
-	reader *bufio.Reader
-
-	FilterOffset int64
-	FilterSize   int64
-	IndexOffset  int64
-	IndexSize    int64
-
+	mu              sync.RWMutex
+	conf            *Config
+	fd              *os.File
+	reader          *bufio.Reader
+	FilterOffset    int64
+	FilterSize      int64
+	IndexOffset     int64
+	IndexSize       int64
 	compressScratch []byte
 }
 
@@ -41,65 +38,55 @@ type Index struct {
 }
 
 func (r *SstReader) ReadFooter() error {
-
-	_, err := r.fd.Seek(-footerLen, io.SeekEnd)
-
+	_, err := r.fd.Seek(-int64(r.conf.SstFooterSize), io.SeekEnd)
 	if err != nil {
 		return err
 	}
 
 	filterOffset, err := binary.ReadUvarint(r.reader)
-
 	if err != nil {
 		return err
 	}
 
 	filterSize, err := binary.ReadUvarint(r.reader)
-
 	if err != nil {
 		return err
 	}
 
 	indexOffset, err := binary.ReadUvarint(r.reader)
-
 	if err != nil {
 		return err
 	}
 
 	indexSize, err := binary.ReadUvarint(r.reader)
-
 	if err != nil {
 		return err
 	}
 
 	if filterOffset == 0 || filterSize == 0 || indexOffset == 0 || indexSize == 0 {
-		log.Println(filterOffset, filterSize, indexOffset, indexSize)
-		return fmt.Errorf("无法解析文件")
+		return fmt.Errorf("sst文件footer数据异常")
 	}
 
 	r.FilterOffset = int64(filterOffset)
 	r.FilterSize = int64(filterSize)
 	r.IndexOffset = int64(indexOffset)
 	r.IndexSize = int64(indexSize)
-
 	return nil
 }
 
-func (r *SstReader) ReadFilter() (filter map[uint64][]byte, err error) {
-
+func (r *SstReader) ReadFilter() (map[uint64][]byte, error) {
 	if r.FilterOffset == 0 {
-		if err = r.ReadFooter(); err != nil {
+		if err := r.ReadFooter(); err != nil {
 			return nil, err
 		}
 	}
 
-	if _, err = r.fd.Seek(r.FilterOffset, io.SeekStart); err != nil {
+	if _, err := r.fd.Seek(r.FilterOffset, io.SeekStart); err != nil {
 		return nil, err
 	}
 	r.reader.Reset(r.fd)
 
 	compress, err := r.Read(r.FilterSize)
-
 	if err != nil {
 		return nil, err
 	}
@@ -112,30 +99,25 @@ func (r *SstReader) ReadFilter() (filter map[uint64][]byte, err error) {
 	}
 
 	data, err := snappy.Decode(nil, compressData)
-
 	if err != nil {
 		return nil, err
 	}
-	filter = ReadFilter(data)
-
-	return
+	return ReadFilter(data), nil
 }
 
-func (r *SstReader) ReadIndex() (index []*Index, err error) {
-
+func (r *SstReader) ReadIndex() ([]*Index, error) {
 	if r.IndexOffset == 0 {
-		if err = r.ReadFooter(); err != nil {
+		if err := r.ReadFooter(); err != nil {
 			return nil, err
 		}
 	}
 
-	if _, err = r.fd.Seek(r.IndexOffset, io.SeekStart); err != nil {
+	if _, err := r.fd.Seek(r.IndexOffset, io.SeekStart); err != nil {
 		return nil, err
 	}
 	r.reader.Reset(r.fd)
 
 	compress, err := r.Read(r.IndexSize)
-
 	if err != nil {
 		return nil, err
 	}
@@ -147,32 +129,27 @@ func (r *SstReader) ReadIndex() (index []*Index, err error) {
 	}
 
 	data, err := snappy.Decode(nil, compressData)
-
 	if err != nil {
 		return nil, err
 	}
-	index = ReadIndex(data)
-
-	return
+	return ReadIndex(data), nil
 }
 
-func (r *SstReader) ReadBlock(offset, size uint64) (data []byte, err error) {
+func (r *SstReader) ReadBlock(offset, size uint64) ([]byte, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	if _, err = r.fd.Seek(int64(offset), io.SeekStart); err != nil {
+	if _, err := r.fd.Seek(int64(offset), io.SeekStart); err != nil {
 		return nil, err
 	}
 	r.reader.Reset(r.fd)
 
 	compressed, err := r.Read(int64(size) - 4)
-
 	if err != nil {
 		return nil, err
 	}
 
 	dataLen, err := snappy.DecodedLen(compressed)
-
 	if err != nil {
 		return nil, err
 	}
@@ -181,22 +158,13 @@ func (r *SstReader) ReadBlock(offset, size uint64) (data []byte, err error) {
 		r.compressScratch = make([]byte, dataLen)
 	}
 
-	data, err = snappy.Decode(r.compressScratch, compressed)
-
-	if err != nil {
-		return nil, err
-	}
-
-	return
+	return snappy.Decode(r.compressScratch, compressed)
 }
 
 func (r *SstReader) Read(size int64) (b []byte, err error) {
-
 	b = make([]byte, size)
-
 	_, err = io.ReadFull(r.reader, b)
-
-	return b, err
+	return
 }
 
 func (r *SstReader) Destory() {
@@ -204,10 +172,11 @@ func (r *SstReader) Destory() {
 	r.fd.Close()
 	os.Remove(r.fd.Name())
 }
-func NewSstReader(fd *os.File) *SstReader {
 
+func NewSstReader(fd *os.File, conf *Config) *SstReader {
 	return &SstReader{
 		fd:     fd,
+		conf:   conf,
 		reader: bufio.NewReader(fd),
 	}
 }
@@ -230,39 +199,30 @@ func DecodeBlock(block []byte) ([]byte, []int) {
 func ReadRecord(prevKey []byte, buf *bytes.Buffer) ([]byte, []byte, error) {
 
 	keyPrefixLen, err := binary.ReadUvarint(buf)
-
 	if err != nil {
-		// log.Println("读取key共享长度失败", err)
 		return nil, nil, err
 	}
 
 	keyLen, err := binary.ReadUvarint(buf)
 
 	if err != nil {
-		// log.Println("读取key长度失败", err)
 		return nil, nil, err
 	}
 
 	valueLen, err := binary.ReadUvarint(buf)
-
 	if err != nil {
-		// log.Println("读取Value长度失败", err)
 		return nil, nil, err
 	}
 
 	key := make([]byte, keyLen)
-
 	_, err = io.ReadFull(buf, key)
 	if err != nil {
-		// log.Println("读取Key失败", err)
 		return nil, nil, err
 	}
 
 	value := make([]byte, valueLen)
-
 	_, err = io.ReadFull(buf, value)
 	if err != nil {
-		// log.Println("读取Value失败", err)
 		return nil, nil, err
 	}
 
@@ -283,24 +243,12 @@ func ReadIndex(index []byte) []*Index {
 
 	for {
 		key, value, err := ReadRecord(prevKey, indexBuf)
-
 		if err != nil {
 			break
 		}
 
-		buf := bytes.NewBuffer(value)
-
-		offset, err := binary.ReadUvarint(buf)
-
-		if err != nil {
-			log.Println("读取块偏移失败", err)
-		}
-
-		size, err := binary.ReadUvarint(buf)
-
-		if err != nil {
-			log.Println("读取块大小失败", err)
-		}
+		offset, n := binary.Uvarint(value)
+		size, _ := binary.Uvarint(value[n:])
 
 		indexes = append(indexes, &Index{
 			Key:    key,
@@ -315,27 +263,19 @@ func ReadIndex(index []byte) []*Index {
 func ReadFilter(index []byte) map[uint64][]byte {
 
 	data, _ := DecodeBlock(index)
-	indexBuf := bytes.NewBuffer(data)
+	buf := bytes.NewBuffer(data)
 
 	filterMap := make(map[uint64][]byte, 0)
 	prevKey := make([]byte, 0)
 
 	for {
-		key, value, err := ReadRecord(prevKey, indexBuf)
+		key, value, err := ReadRecord(prevKey, buf)
 
 		if err != nil {
 			break
 		}
 
-		buf := bytes.NewBuffer(key)
-
-		offset, err := binary.ReadUvarint(buf)
-
-		if err != nil {
-			log.Println("解析key失败", err)
-			continue
-		}
-
+		offset, _ := binary.Uvarint(key)
 		filterMap[offset] = value
 		prevKey = key
 	}

@@ -8,21 +8,13 @@ import (
 
 const maxAppendEntriesSize = 1000
 
-// type pb.LogEntry struct {
-// 	Term  uint64
-// 	Index uint64
-// 	Data  []byte
-// }
-
 type RaftLog struct {
-	logs    []*pb.LogEntry
-	storage Storage
-
-	commitIndex     uint64
-	lastApplied     uint64
-	lastAppliedTerm uint64
-
-	logger *zap.SugaredLogger
+	logs             []*pb.LogEntry
+	storage          Storage
+	commitIndex      uint64
+	lastAppliedIndex uint64
+	lastAppliedTerm  uint64
+	logger           *zap.SugaredLogger
 }
 
 func (l *RaftLog) GetEntries(index uint64) []*pb.LogEntry {
@@ -50,7 +42,7 @@ func (l *RaftLog) GetTerm(index uint64) uint64 {
 		}
 	}
 
-	if index == l.lastApplied {
+	if index == l.lastAppliedIndex {
 		return l.lastAppliedTerm
 	}
 
@@ -65,9 +57,7 @@ func (l *RaftLog) AppendEntry(entry []*pb.LogEntry) {
 		return
 	}
 
-	if size > 1000 {
-		l.logger.Debugf("添加日志: %d - %d", entry[0].Index, entry[size-1].Index)
-	}
+	// l.logger.Debugf("添加日志: %d - %d", entry[0].Index, entry[size-1].Index)
 
 	l.logs = append(l.logs, entry...)
 }
@@ -128,24 +118,24 @@ func (l *RaftLog) Apply(lastCommit, lastLogIndex uint64) {
 		}
 	}
 
-	if l.commitIndex > l.lastApplied {
+	if l.commitIndex > l.lastAppliedIndex {
 		n := 0
+		// canSnapshot := false
 		for i, entry := range l.logs {
 			if l.commitIndex >= entry.Index {
 				n = i
 			} else {
+				// canSnapshot = true
 				break
 			}
 		}
 
 		entries := l.logs[:n+1]
 
-		if n > 100 {
-			l.logger.Debugf("最后提交： %d ,已提交 %d ,提交日志: %d - %d", lastCommit, l.lastApplied, entries[0].Index, entries[len(entries)-1].Index)
-		}
+		// l.logger.Debugf("最后提交： %d ,已提交 %d ,提交日志: %d - %d", lastCommit, l.lastAppliedIndex, entries[0].Index, entries[len(entries)-1].Index)
 
 		l.storage.Append(entries)
-		l.lastApplied = l.logs[n].Index
+		l.lastAppliedIndex = l.logs[n].Index
 		l.lastAppliedTerm = l.logs[n].Term
 		l.logs = l.logs[n+1:]
 	}
@@ -157,7 +147,7 @@ func (l *RaftLog) GetLastLogIndexAndTerm() (lastLogIndex, lastLogTerm uint64) {
 		lastLogIndex = lastLog.Index
 		lastLogTerm = lastLog.Term
 	} else {
-		lastLogIndex = l.lastApplied
+		lastLogIndex = l.lastAppliedIndex
 		lastLogTerm = l.lastAppliedTerm
 	}
 	// l.logger.Debugf("lastLogIndex: %d, lastLogTerm: %d, log size: %d", lastLogIndex, lastLogTerm, len(l.logs))
@@ -167,9 +157,14 @@ func (l *RaftLog) GetLastLogIndexAndTerm() (lastLogIndex, lastLogTerm uint64) {
 
 func NewRaftLog(storage Storage, logger *zap.SugaredLogger) *RaftLog {
 
+	lastIndex, lastTerm := storage.GetLast()
+
 	return &RaftLog{
-		logs:    make([]*pb.LogEntry, 0),
-		storage: storage,
-		logger:  logger,
+		logs:             make([]*pb.LogEntry, 0),
+		storage:          storage,
+		commitIndex:      lastIndex,
+		lastAppliedIndex: lastIndex,
+		lastAppliedTerm:  lastTerm,
+		logger:           logger,
 	}
 }

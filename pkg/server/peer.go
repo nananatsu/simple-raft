@@ -67,11 +67,18 @@ func (p *Peer) Start() {
 	}()
 
 	go func() {
+		var propSendc chan *pb.RaftMessage
 		for {
 			var msg *pb.RaftMessage
+			if len(p.Sendc) > 0 {
+				propSendc = nil
+			} else {
+				propSendc = p.PropSendc
+			}
+
 			select {
 			case msg = <-p.Sendc:
-			case msg = <-p.PropSendc:
+			case msg = <-propSendc:
 			}
 
 			if p.sendClient == nil {
@@ -79,7 +86,7 @@ func (p *Peer) Start() {
 			}
 
 			if err := p.sendClient.Send(msg); err != nil {
-				p.logger.Errorln("发送消息失败", err)
+				p.logger.Errorf("发送消息失败,消息类型: %s ,日志数量: %d %v", msg.MsgType.Descriptor().FullName(), len(msg.Entry), err)
 
 				if !p.connecting {
 					p.Reconnect()
@@ -133,7 +140,7 @@ func (p *Peer) Connect() error {
 
 func NewPeer(id uint64, address string, node *raft.RaftNode, logger *zap.SugaredLogger) *Peer {
 
-	propc := make(chan *pb.RaftMessage)
+	propc := make(chan *pb.RaftMessage, 1000)
 	recvc := make(chan *pb.RaftMessage, 1000)
 	sendc := make(chan *pb.RaftMessage, 1000)
 	propSendc := make(chan *pb.RaftMessage, 1000)

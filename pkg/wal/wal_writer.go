@@ -4,10 +4,8 @@ import (
 	"bytes"
 	"encoding/binary"
 	"kvdb/pkg/utils"
-	"log"
 	"os"
 	"sync"
-	"time"
 
 	"go.uber.org/zap"
 )
@@ -19,16 +17,12 @@ const (
 	kLast
 )
 
-const walFlushInterval = 10 * time.Second
-
 type WalWriter struct {
-	mu sync.RWMutex
-
+	mu            sync.RWMutex
 	fd            *os.File
 	header        [20]byte
 	buf           *bytes.Buffer
 	prevBlockType uint8
-	ticker        *time.Ticker
 	logger        *zap.SugaredLogger
 }
 
@@ -84,11 +78,11 @@ func (w *WalWriter) PaddingFile() {
 	defer w.mu.Unlock()
 
 	info, _ := w.fd.Stat()
-
 	n := info.Size() % walBlockSize
-
 	if n > 0 {
-		w.fd.Write(make([]byte, walBlockSize-n))
+		if _, err := w.fd.Write(make([]byte, walBlockSize-n)); err != nil {
+			w.logger.Warnf("填充未完成写入文件块失败：%d", err)
+		}
 	}
 }
 
@@ -104,39 +98,25 @@ func (w *WalWriter) WriteBlock(blockType uint8, length uint16) {
 	w.buf.Truncate(7)
 }
 
+func (w *WalWriter) Flush() {
+	if w.buf.Len() > 7 {
+		w.mu.Lock()
+		w.PaddingBlock(walBlockSize-w.buf.Len(), true)
+		w.mu.Unlock()
+	}
+}
+
 func (w *WalWriter) Finish() {
 	file := w.fd.Name()
 	w.fd.Close()
-	w.ticker.Stop()
 	os.Remove(file)
 }
 
-func (w *WalWriter) Sync() {
-	w.ticker = time.NewTicker(walFlushInterval)
-	for {
-		<-w.ticker.C
-		if w.buf.Len() > 7 {
-			w.mu.Lock()
-			w.PaddingBlock(walBlockSize-w.buf.Len(), true)
-			w.mu.Unlock()
-		}
-	}
-}
-
-func NewWalWriter(walFile string, logger *zap.SugaredLogger) *WalWriter {
-
-	fd, err := os.OpenFile(walFile, os.O_APPEND|os.O_WRONLY|os.O_CREATE, 0644)
-
-	if err != nil {
-		log.Println("打开预写日志文件失败", err)
-	}
-
+func NewWalWriter(fd *os.File, logger *zap.SugaredLogger) *WalWriter {
 	w := &WalWriter{
 		fd:     fd,
 		buf:    bytes.NewBuffer(make([]byte, 7)),
 		logger: logger,
 	}
-	go w.Sync()
-
 	return w
 }

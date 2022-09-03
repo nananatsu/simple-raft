@@ -23,12 +23,13 @@ func (b *BloomFilter) Hash() []byte {
 	}
 	// 布隆过滤器bit数组长度
 	nBits := uint32(n * b.bitsPerKey)
-	nBytes := (nBits + 7) / 8
-	nBits = nBytes * 8
 
 	if nBits < 64 {
 		nBits = 64
 	}
+
+	nBytes := (nBits + 7) / 8
+	nBits = nBytes * 8
 
 	dest := make([]byte, nBytes+1)
 	dest[nBytes] = k

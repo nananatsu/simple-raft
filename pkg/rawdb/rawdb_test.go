@@ -19,7 +19,7 @@ func TestNewRawDB(t *testing.T) {
 	sugar := logger.Sugar()
 	defer sugar.Sync()
 
-	db := NewRawDB(devTestPath, sugar)
+	db := NewRawDB(devTestPath, NewConfig(), sugar)
 
 	db.Put([]byte("hello"), []byte("world"))
 
@@ -31,7 +31,7 @@ func TestRawDBGet(t *testing.T) {
 	sugar := logger.Sugar()
 	defer sugar.Sync()
 
-	db := NewRawDB(devTestPath, sugar)
+	db := NewRawDB(devTestPath, NewConfig(), sugar)
 
 	db.Put([]byte("hello"), []byte("world"))
 
@@ -52,7 +52,7 @@ func TestRawDBFlush(t *testing.T) {
 
 	metricChan := make(chan int, 10000)
 
-	db := NewRawDB(devTestPath, sugar)
+	db := NewRawDB(devTestPath, NewConfig(), sugar)
 
 	for i := 0; i < 10; i++ {
 		go func(chan int) {
@@ -82,7 +82,7 @@ func TestCompactionRawDB(t *testing.T) {
 	sugar := logger.Sugar()
 	defer sugar.Sync()
 
-	db := NewRawDB(devTestPath, sugar)
+	db := NewRawDB("../../build/sst", NewConfig(), sugar)
 
 	db.lsmTree.Compaction(0)
 

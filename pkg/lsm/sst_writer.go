@@ -4,12 +4,10 @@ import (
 	"bytes"
 	"encoding/binary"
 	"kvdb/pkg/filter"
-	"log"
 	"os"
-)
 
-const dataBlockSize = 16 * 1024
-const footerLen = 40
+	"go.uber.org/zap"
+)
 
 func SharedPrefixLen(a, b []byte) int {
 	i, n := 0, len(a)
@@ -38,25 +36,22 @@ func GetSeparator(a, b []byte) []byte {
 }
 
 type SstWriter struct {
-	fd *os.File
-
-	dataBuf   *bytes.Buffer
-	filterBuf *bytes.Buffer
-	indexBuf  *bytes.Buffer
-
-	index  []*Index
-	filter map[uint64][]byte
-
-	bf          *filter.BloomFilter
-	dataBlock   *Block
-	filterBlock *Block
-	indexBlock  *Block
-
-	indexScratch [20]byte
-	prevKey      []byte
-
+	conf            *Config
+	fd              *os.File
+	dataBuf         *bytes.Buffer
+	filterBuf       *bytes.Buffer
+	indexBuf        *bytes.Buffer
+	index           []*Index
+	filter          map[uint64][]byte
+	bf              *filter.BloomFilter
+	dataBlock       *Block
+	filterBlock     *Block
+	indexBlock      *Block
+	indexScratch    [20]byte
+	prevKey         []byte
 	prevBlockOffset uint64
 	prevBlockSize   uint64
+	logger          *zap.SugaredLogger
 }
 
 func (w *SstWriter) addIndex(key []byte) {
@@ -80,7 +75,7 @@ func (w *SstWriter) Append(key, value []byte) {
 
 	w.prevKey = key
 
-	if w.dataBlock.Size() > dataBlockSize {
+	if w.dataBlock.Size() > w.conf.SstDataBlockSize {
 		var err error
 		w.prevBlockOffset = uint64(w.dataBuf.Len())
 		n := binary.PutUvarint(w.indexScratch[0:], uint64(w.prevBlockOffset))
@@ -91,9 +86,8 @@ func (w *SstWriter) Append(key, value []byte) {
 		w.bf.Reset()
 
 		w.prevBlockSize, err = w.dataBlock.FlushBlockTo(w.dataBuf)
-
 		if err != nil {
-			log.Println("写入block失败", err)
+			w.logger.Errorln("写入data block失败", err)
 		}
 	}
 }
@@ -104,12 +98,16 @@ func (w *SstWriter) Finish() (int64, map[uint64][]byte, []*Index) {
 		n := binary.PutUvarint(w.indexScratch[0:], uint64(w.prevBlockOffset))
 		w.filterBlock.Append(w.indexScratch[:n], w.bf.Hash())
 	}
-	w.filterBlock.FlushBlockTo(w.filterBuf)
+	if _, err := w.filterBlock.FlushBlockTo(w.filterBuf); err != nil {
+		w.logger.Errorln("写入filter block失败", err)
+	}
 
 	w.addIndex(w.prevKey)
-	w.indexBlock.FlushBlockTo(w.indexBuf)
+	if _, err := w.indexBlock.FlushBlockTo(w.indexBuf); err != nil {
+		w.logger.Errorln("写入index block失败", err)
+	}
 
-	footer := make([]byte, footerLen)
+	footer := make([]byte, w.conf.SstFooterSize)
 
 	size := w.dataBuf.Len()
 
@@ -120,7 +118,7 @@ func (w *SstWriter) Finish() (int64, map[uint64][]byte, []*Index) {
 	n += binary.PutUvarint(footer[n:], uint64(size))
 	n += binary.PutUvarint(footer[n:], uint64(w.indexBuf.Len()))
 	size += w.indexBuf.Len()
-	size += footerLen
+	size += w.conf.SstFooterSize
 
 	w.fd.Write(w.dataBuf.Bytes())
 	w.fd.Write(w.filterBuf.Bytes())
@@ -141,9 +139,9 @@ func (w *SstWriter) Close() {
 	w.indexBuf.Reset()
 }
 
-func NewSstWriter(fd *os.File) *SstWriter {
-
+func NewSstWriter(fd *os.File, conf *Config, logger *zap.SugaredLogger) *SstWriter {
 	return &SstWriter{
+		conf:        conf,
 		fd:          fd,
 		dataBuf:     bytes.NewBuffer(make([]byte, 0)),
 		filterBuf:   bytes.NewBuffer(make([]byte, 0)),
@@ -151,9 +149,10 @@ func NewSstWriter(fd *os.File) *SstWriter {
 		filter:      make(map[uint64][]byte),
 		index:       make([]*Index, 0),
 		bf:          filter.NewBloomFilter(10),
-		dataBlock:   NewBlock(),
-		filterBlock: NewBlock(),
-		indexBlock:  NewBlock(),
+		dataBlock:   NewBlock(conf),
+		filterBlock: NewBlock(conf),
+		indexBlock:  NewBlock(conf),
 		prevKey:     make([]byte, 0),
+		logger:      logger,
 	}
 }

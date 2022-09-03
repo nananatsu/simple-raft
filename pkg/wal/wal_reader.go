@@ -5,24 +5,23 @@ import (
 	"encoding/binary"
 	"io"
 	"kvdb/pkg/utils"
-	"log"
 	"os"
+
+	"go.uber.org/zap"
 )
 
 const walBlockSize = 32 * 1024
 
 type WalReader struct {
-	fd *os.File
-
-	block []byte
-	data  []byte
-
-	buf *bytes.Buffer
+	fd     *os.File
+	block  []byte
+	data   []byte
+	buf    *bytes.Buffer
+	logger *zap.SugaredLogger
 }
 
 func (r *WalReader) Read() error {
 	_, err := io.ReadFull(r.fd, r.block)
-
 	if err != nil {
 		return err
 	}
@@ -30,14 +29,15 @@ func (r *WalReader) Read() error {
 }
 
 func (r *WalReader) Next() ([]byte, []byte) {
-
 	var prevBlockType uint8
 	for r.buf == nil {
 		err := r.Read()
 		if err != nil {
+			if err != io.EOF {
+				r.logger.Errorf("读取预写日志块失败:%v", err)
+			}
 			return nil, nil
 		}
-
 		crc := binary.LittleEndian.Uint32(r.block[0:4])
 		length := binary.LittleEndian.Uint16(r.block[4:6])
 		blockType := uint8(r.block[6])
@@ -48,10 +48,12 @@ func (r *WalReader) Next() ([]byte, []byte) {
 				r.data = r.block[7 : length+7]
 				r.buf = bytes.NewBuffer(r.data)
 			case kFirst:
-				r.data = r.block[7:]
+				r.data = make([]byte, length)
+				copy(r.data, r.block[7:length+7])
 			case kMiddle:
 				if prevBlockType == kMiddle || prevBlockType == kFirst {
-					r.data = append(r.data, r.block[7:]...)
+					d := r.block[7 : length+7]
+					r.data = append(r.data, d...)
 				}
 			case kLast:
 				if prevBlockType == kMiddle || prevBlockType == kFirst {
@@ -60,18 +62,22 @@ func (r *WalReader) Next() ([]byte, []byte) {
 				}
 			}
 			prevBlockType = blockType
+			// r.logger.Debugf("wal块类型 %d, 块记录数据长度； %d, 数据长度： %d ,块: %v", blockType, length, len(r.data), r.data[:20])
 		} else {
-			log.Println("预写日志校验失败")
+			r.logger.Debugln("预写日志校验失败")
 			if prevBlockType == kMiddle || prevBlockType == kLast {
 				r.buf = bytes.NewBuffer(r.data)
 			}
 		}
 	}
 
-	key, value, err := ReadRecord(r.buf)
-
+	key, value, err := ReadRecord(r.buf, r.logger)
 	if err == nil {
 		return key, value
+	}
+
+	if err != io.EOF {
+		r.logger.Errorf("读取预写日志失败", err)
 	}
 
 	r.buf = nil
@@ -85,22 +91,15 @@ func (r *WalReader) Close() {
 	r.data = nil
 }
 
-func NewWalReader(walFile string) *WalReader {
-
-	fd, err := os.OpenFile(walFile, os.O_RDONLY, 0644)
-
-	if err != nil {
-		log.Println("打开文件失败", err)
-		return nil
-	}
-
+func NewWalReader(fd *os.File, logger *zap.SugaredLogger) *WalReader {
 	return &WalReader{
-		fd:    fd,
-		block: make([]byte, walBlockSize),
+		fd:     fd,
+		block:  make([]byte, walBlockSize),
+		logger: logger,
 	}
 }
 
-func ReadRecord(buf *bytes.Buffer) ([]byte, []byte, error) {
+func ReadRecord(buf *bytes.Buffer, logger *zap.SugaredLogger) ([]byte, []byte, error) {
 
 	keyLen, err := binary.ReadUvarint(buf)
 

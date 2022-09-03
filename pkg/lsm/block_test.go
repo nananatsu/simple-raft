@@ -7,7 +7,7 @@ import (
 
 func TestCompress(t *testing.T) {
 
-	b := NewBlock()
+	b := NewBlock(NewConfig())
 
 	b.Append([]byte("heelo"), []byte("woorld"))
 	b.Append([]byte("heal@"), []byte("w00rld"))

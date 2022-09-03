@@ -3,91 +3,133 @@ package rawdb
 import (
 	"kvdb/pkg/skiplist"
 	"kvdb/pkg/wal"
+	"os"
 	"path"
 	"strconv"
+	"time"
 
 	"go.uber.org/zap"
 )
 
-const maxMemDBSize = 4096 * 1024
+type MemDBConfig struct {
+	Dir              string
+	SeqNo            int
+	WalFlushInterval time.Duration
+}
 
 type MemDB struct {
-	SeqNo int
-	Dir   string
-	db    *skiplist.SkipList
-	walw  *wal.WalWriter
-
+	conf   *MemDBConfig
+	db     *skiplist.SkipList
+	walw   *wal.WalWriter
+	ticker *time.Ticker
 	logger *zap.SugaredLogger
 }
 
-func (mdb *MemDB) Get(key []byte) []byte {
-	return mdb.db.Get(key)
+func (db *MemDB) Get(key []byte) []byte {
+	return db.db.Get(key)
 }
 
-func (mdb *MemDB) Put(key, value []byte) {
-	if mdb.walw != nil {
-		mdb.walw.Write(key, value)
+func (db *MemDB) Put(key, value []byte) {
+	if db.walw != nil {
+		db.walw.Write(key, value)
 	}
-	mdb.db.Put(key, value)
+	db.db.Put(key, value)
 }
 
-func (mdb *MemDB) GenerateIterator() *skiplist.SkipListIter {
-	return skiplist.NewSkipListIter(mdb.db)
+func (db *MemDB) GenerateIterator() *skiplist.SkipListIter {
+	return skiplist.NewSkipListIter(db.db)
 }
 
-func (mdb *MemDB) GetMin() ([]byte, []byte) {
-	return mdb.db.GetMin()
+func (db *MemDB) GetMax() ([]byte, []byte) {
+	return db.db.GetMax()
 }
 
-func (mdb *MemDB) GetMax() ([]byte, []byte) {
-	return mdb.db.GetMax()
+func (db *MemDB) Size() int {
+	return db.db.Size()
 }
 
-func (mdb *MemDB) Size() int {
-	return mdb.db.Size()
+func (db *MemDB) GetSeqNo() int {
+	return db.conf.SeqNo
 }
 
-func (mdb *MemDB) Finish() {
-	mdb.walw.Finish()
+func (db *MemDB) GetDir() string {
+	return db.conf.Dir
 }
 
-func RestoreMemDB(dir string, seqNo int, logger *zap.SugaredLogger) *MemDB {
+func (db *MemDB) Sync() {
+	go func() {
+		for {
+			<-db.ticker.C
+			if db.walw != nil {
+				db.walw.Flush()
+			}
+		}
+	}()
+}
 
-	walFile := path.Join(dir, strconv.Itoa(0)+"."+strconv.Itoa(seqNo)+".wal")
+func (db *MemDB) Finish() {
+	if db.walw != nil {
+		db.walw.Finish()
+	}
+	db.ticker.Stop()
+}
+
+func RestoreMemDB(conf *MemDBConfig, logger *zap.SugaredLogger) (*MemDB, error) {
+
+	walFile := path.Join(conf.Dir, strconv.Itoa(0)+"."+strconv.Itoa(conf.SeqNo)+".wal")
+	fd, err := os.OpenFile(walFile, os.O_RDONLY, 0644)
+	if err != nil {
+		logger.Errorf("打开预写日志文件%d失败: %v", walFile, err)
+		return nil, err
+	}
 
 	sl := skiplist.NewSkipList()
-	r := wal.NewWalReader(walFile)
+	r := wal.NewWalReader(fd, logger)
 	defer r.Close()
 
 	for {
 		k, v := r.Next()
-		if k == nil {
+		if len(k) == 0 {
 			break
 		}
 		sl.Put(k, v)
 	}
 
-	w := wal.NewWalWriter(walFile, logger)
+	wfd, err := os.OpenFile(walFile, os.O_APPEND|os.O_WRONLY|os.O_CREATE, 0644)
+	if err != nil {
+		logger.Errorf("打开预写日志文件%d失败: %v", walFile, err)
+		// return nil, err
+	}
+
+	w := wal.NewWalWriter(wfd, logger)
 	w.PaddingFile()
 
-	return &MemDB{
-		SeqNo:  seqNo,
+	db := &MemDB{
+		conf:   conf,
 		db:     sl,
 		walw:   w,
 		logger: logger,
 	}
+	db.Sync()
+	return db, nil
 }
 
-func NewMemDB(dir string, seqNo int, logger *zap.SugaredLogger) *MemDB {
+func NewMemDB(conf *MemDBConfig, logger *zap.SugaredLogger) *MemDB {
 
-	walFile := path.Join(dir, strconv.Itoa(0)+"."+strconv.Itoa(seqNo)+".wal")
+	walFile := path.Join(conf.Dir, strconv.Itoa(0)+"."+strconv.Itoa(conf.SeqNo)+".wal")
+	fd, err := os.OpenFile(walFile, os.O_APPEND|os.O_WRONLY|os.O_CREATE, 0644)
+	if err != nil {
+		logger.Errorf("打开预写日志文件%d失败: %v", walFile, err)
+	}
 
-	w := wal.NewWalWriter(walFile, logger)
-	return &MemDB{
-		SeqNo:  seqNo,
-		Dir:    dir,
+	db := &MemDB{
+		conf:   conf,
 		db:     skiplist.NewSkipList(),
-		walw:   w,
+		walw:   wal.NewWalWriter(fd, logger),
+		ticker: time.NewTicker(conf.WalFlushInterval),
 		logger: logger,
 	}
+
+	db.Sync()
+	return db
 }

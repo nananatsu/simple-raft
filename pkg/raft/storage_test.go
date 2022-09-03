@@ -16,10 +16,10 @@ func TestStorage(t *testing.T) {
 
 		storage := NewRaftStorage("../../build/raft_"+strconv.Itoa(i), sugar)
 
-		minIndex, _ := storage.GetFirst()
+		// minIndex, _ := storage.GetFirst()
 		maxIndex, _ := storage.GetLast()
 
-		sugar.Infoln(minIndex, maxIndex)
+		sugar.Infoln(maxIndex)
 	}
 
 }

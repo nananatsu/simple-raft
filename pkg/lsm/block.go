@@ -9,12 +9,8 @@ import (
 	"github.com/golang/snappy"
 )
 
-const restartInterval = 16
-const blockTrailerlen = 4
-
 type Block struct {
-	restartInterval int
-
+	conf               *Config
 	header             [30]byte
 	record             *bytes.Buffer
 	trailer            *bytes.Buffer
@@ -23,83 +19,82 @@ type Block struct {
 	compressionScratch []byte
 }
 
-func (d *Block) Append(key, value []byte) {
+func (b *Block) Append(key, value []byte) {
 	keyLen := len(key)
 	valueLen := len(value)
 	nSharePrefix := 0
 
 	// restart point
-	if d.nEntries%d.restartInterval == 0 {
+	if b.nEntries%b.conf.SstRestartInterval == 0 {
 		buf4 := make([]byte, 4)
-		binary.LittleEndian.PutUint32(buf4, uint32(d.record.Len()))
-		d.trailer.Write(buf4)
+		binary.LittleEndian.PutUint32(buf4, uint32(b.record.Len()))
+		b.trailer.Write(buf4)
 	} else {
-		nSharePrefix = SharedPrefixLen(d.prevKey, key)
+		nSharePrefix = SharedPrefixLen(b.prevKey, key)
 	}
 
-	n := binary.PutUvarint(d.header[0:], uint64(nSharePrefix))
-	n += binary.PutUvarint(d.header[n:], uint64(keyLen-nSharePrefix))
-	n += binary.PutUvarint(d.header[n:], uint64(valueLen))
+	n := binary.PutUvarint(b.header[0:], uint64(nSharePrefix))
+	n += binary.PutUvarint(b.header[n:], uint64(keyLen-nSharePrefix))
+	n += binary.PutUvarint(b.header[n:], uint64(valueLen))
 
 	// data
-	d.record.Write(d.header[:n])
-	d.record.Write(key[nSharePrefix:])
-	d.record.Write(value)
+	b.record.Write(b.header[:n])
+	b.record.Write(key[nSharePrefix:])
+	b.record.Write(value)
 
-	d.prevKey = append(d.prevKey[:0], key...)
-	d.nEntries++
+	b.prevKey = append(b.prevKey[:0], key...)
+	b.nEntries++
 }
 
-func (d *Block) FlushBlockTo(dest io.Writer) (uint64, error) {
-
-	defer d.clear()
+func (b *Block) FlushBlockTo(dest io.Writer) (uint64, error) {
+	defer b.clear()
 
 	buf4 := make([]byte, 4)
-	binary.LittleEndian.PutUint32(buf4, uint32(d.trailer.Len())/4)
-	d.trailer.Write(buf4)
+	binary.LittleEndian.PutUint32(buf4, uint32(b.trailer.Len())/4)
+	b.trailer.Write(buf4)
 
-	n, err := dest.Write(d.compress())
+	n, err := dest.Write(b.compress())
 	return uint64(n), err
 }
 
-func (d *Block) compress() []byte {
+func (b *Block) compress() []byte {
 
-	d.record.Write(d.trailer.Bytes())
-	n := snappy.MaxEncodedLen(d.record.Len())
+	b.record.Write(b.trailer.Bytes())
+	n := snappy.MaxEncodedLen(b.record.Len())
 
-	if n > len(d.compressionScratch) {
-		d.compressionScratch = make([]byte, n+blockTrailerlen)
+	if n > len(b.compressionScratch) {
+		b.compressionScratch = make([]byte, n+b.conf.SstBlockTrailerSize)
 	}
 
-	compressed := snappy.Encode(d.compressionScratch, d.record.Bytes())
+	compressed := snappy.Encode(b.compressionScratch, b.record.Bytes())
 	crc := utils.Checksum(compressed)
 
 	size := len(compressed)
-	compressed = compressed[:size+blockTrailerlen]
+	compressed = compressed[:size+b.conf.SstBlockTrailerSize]
 
 	binary.LittleEndian.PutUint32(compressed[size:], crc)
 
 	return compressed
 }
 
-func (d *Block) clear() {
+func (b *Block) clear() {
 
-	d.nEntries = 0
-	d.prevKey = d.prevKey[:0]
-	d.record.Reset()
-	d.trailer.Reset()
+	b.nEntries = 0
+	b.prevKey = b.prevKey[:0]
+	b.record.Reset()
+	b.trailer.Reset()
 }
 
-func (d *Block) Size() int {
-	return d.record.Len() + d.trailer.Len() + 4
+func (b *Block) Size() int {
+	return b.record.Len() + b.trailer.Len() + 4
 }
 
-func NewBlock() *Block {
+func NewBlock(conf *Config) *Block {
 
 	return &Block{
-		record:          bytes.NewBuffer(make([]byte, 0)),
-		trailer:         bytes.NewBuffer(make([]byte, 0)),
-		restartInterval: restartInterval,
+		record:  bytes.NewBuffer(make([]byte, 0)),
+		trailer: bytes.NewBuffer(make([]byte, 0)),
+		conf:    conf,
 	}
 
 }
