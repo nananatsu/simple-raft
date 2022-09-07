@@ -25,34 +25,36 @@ type RaftNode struct {
 }
 
 func (n *RaftNode) Start() {
-	var propc chan *pb.RaftMessage
-	var sendc chan []*pb.RaftMessage
-	for {
-		var msgs []*pb.RaftMessage
-		if len(n.raft.Msg) > 0 {
-			msgs = n.raft.Msg
-			sendc = n.Sendc
-		} else {
-			sendc = nil
-		}
+	go func() {
+		var propc chan *pb.RaftMessage
+		var sendc chan []*pb.RaftMessage
+		for {
+			var msgs []*pb.RaftMessage
+			if len(n.raft.Msg) > 0 {
+				msgs = n.raft.Msg
+				sendc = n.Sendc
+			} else {
+				sendc = nil
+			}
 
-		if len(n.Recvc) > 0 || len(sendc) > 0 {
-			propc = nil
-		} else {
-			propc = n.Propc
-		}
+			if len(n.Recvc) > 0 || len(sendc) > 0 {
+				propc = nil
+			} else {
+				propc = n.Propc
+			}
 
-		select {
-		case <-n.ticker.C:
-			n.raft.Tick()
-		case msg := <-n.Recvc:
-			n.raft.HandleMsg(msg)
-		case msg := <-propc:
-			n.raft.HandleMsg(msg)
-		case sendc <- msgs:
-			n.raft.Msg = nil
+			select {
+			case <-n.ticker.C:
+				n.raft.Tick()
+			case msg := <-n.Recvc:
+				n.raft.HandleMsg(msg)
+			case msg := <-propc:
+				n.raft.HandleMsg(msg)
+			case sendc <- msgs:
+				n.raft.Msg = nil
+			}
 		}
-	}
+	}()
 }
 
 func (n *RaftNode) HandlePropose(msg *pb.RaftMessage) {
@@ -62,6 +64,7 @@ func (n *RaftNode) HandlePropose(msg *pb.RaftMessage) {
 func (n *RaftNode) Propose(data []byte) {
 	msg := &pb.RaftMessage{
 		MsgType: pb.MessageType_PROPOSE,
+		Term:    n.raft.currentTerm,
 		Entry:   []*pb.LogEntry{{Data: data}},
 	}
 	n.HandlePropose(msg)
@@ -107,7 +110,7 @@ func NewRaftNode(id uint64, storage Storage, peers []uint64, logger *zap.Sugared
 		logger: logger,
 	}
 
-	go node.Start()
+	node.Start()
 
 	return node
 }

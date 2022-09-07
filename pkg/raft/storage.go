@@ -20,6 +20,7 @@ const memdbFlushInterval = 10 * time.Second
 
 type Storage interface {
 	Append(entries []*pb.LogEntry)
+	GetEntries(startIndex, endIndex uint64) []*pb.LogEntry
 	GetTerm(index uint64) uint64
 	GetLast() (uint64, uint64)
 }
@@ -49,6 +50,9 @@ func (rs *RaftStorage) Append(entries []*pb.LogEntry) {
 }
 
 func (rs *RaftStorage) GetTerm(index uint64) (term uint64) {
+	if index == rs.snap.latIncludeIndex {
+		return rs.snap.lastIncludeTerm
+	}
 
 	binary.BigEndian.PutUint64(rs.keyScratch[0:], index)
 	value := rs.db.Get(rs.keyScratch[:8])
@@ -67,6 +71,33 @@ func (rs *RaftStorage) GetLast() (uint64, uint64) {
 		return index, term
 	}
 	return rs.snap.latIncludeIndex, rs.snap.lastIncludeTerm
+}
+
+// 区间: [)
+func (rs *RaftStorage) GetEntries(startIndex, endIndex uint64) []*pb.LogEntry {
+
+	if startIndex < rs.snap.latIncludeIndex {
+		return nil
+	}
+
+	binary.BigEndian.PutUint64(rs.keyScratch[0:], startIndex)
+	binary.BigEndian.PutUint64(rs.keyScratch[8:], endIndex)
+
+	kvs := rs.db.GetRange(rs.keyScratch[:8], rs.keyScratch[8:16])
+	size := len(kvs)
+
+	ret := make([]*pb.LogEntry, len(kvs))
+	for i, kv := range kvs {
+		termUint, n := binary.Uvarint(kv[1])
+		index := binary.BigEndian.Uint64(kv[0])
+		// rs.logger.Debugf("读取日志: %d ,任期: %d", index, termUint)
+		ret[i] = &pb.LogEntry{Index: index, Term: termUint, Data: kv[1][n:]}
+	}
+	if len(ret) > 0 {
+		rs.logger.Warnf("加载已提交日志: %d~%d (总数: %d) ,请求日志: %d~%d", ret[0].Index, ret[size-1].Index, size, startIndex, endIndex)
+	}
+
+	return ret
 }
 
 func NewRaftStorage(dir string, logger *zap.SugaredLogger) *RaftStorage {

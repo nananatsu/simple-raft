@@ -4,3 +4,5 @@
 *.wal
 
 *.log
+
+build/

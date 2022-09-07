@@ -22,7 +22,7 @@ func GetLogger(dir string) *zap.Logger {
 	}
 
 	encoderConfig := zap.NewProductionEncoderConfig()
-	encoderConfig.EncodeTime = zapcore.RFC3339TimeEncoder
+	encoderConfig.EncodeTime = zapcore.ISO8601TimeEncoder
 	// encoderConfig.EncodeLevel = zapcore.CapitalLevelEncoder
 	// encoderConfig.EncodeLevel = zapcore.CapitalLevelEncoder
 	encoderConfig.ConsoleSeparator = " | "

@@ -158,6 +158,27 @@ func (s *SkipList) Get(key []byte) []byte {
 
 }
 
+func (s *SkipList) GetRange(start, end []byte) [][][]byte {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	ret := make([][][]byte, 0)
+	endNode, _ := s.getNode(end)
+
+	n, b := s.getNode(start)
+	if b {
+		for n != endNode {
+			keyStart := s.kvNode[n]
+			keyEnd := keyStart + s.kvNode[n+nKey]
+			valueEnd := keyEnd + s.kvNode[n+nVal]
+			ret = append(ret, [][]byte{s.kvData[keyStart:keyEnd], s.kvData[keyEnd:valueEnd]})
+			n = s.kvNode[n+nNext]
+		}
+	}
+
+	return ret
+}
+
 func (s *SkipList) GetMin() (key, value []byte) {
 	node := s.kvNode[nNext]
 	if node != 0 {

@@ -19,19 +19,28 @@ type RaftLog struct {
 
 func (l *RaftLog) GetEntries(index uint64) []*pb.LogEntry {
 	var entries []*pb.LogEntry
-	for i, entry := range l.logs {
-		if entry.Index == index {
-			entries = l.logs[i:]
-			break
+
+	if index <= l.lastAppliedIndex {
+
+		endIndex := index + maxAppendEntriesSize
+		if endIndex >= l.lastAppliedIndex {
+			endIndex = l.lastAppliedIndex + 1
+		}
+		entries = l.storage.GetEntries(index, endIndex)
+	} else {
+		for i, entry := range l.logs {
+			if entry.Index == index {
+				if len(l.logs)-i > 1000 {
+					entries = l.logs[i : i+1000]
+				} else {
+					entries = l.logs[i:]
+				}
+				break
+			}
 		}
 	}
 
-	if len(entries) > maxAppendEntriesSize {
-		entries = entries[:maxAppendEntriesSize]
-	}
-
 	return entries
-
 }
 
 func (l *RaftLog) GetTerm(index uint64) uint64 {
@@ -57,7 +66,9 @@ func (l *RaftLog) AppendEntry(entry []*pb.LogEntry) {
 		return
 	}
 
-	// l.logger.Debugf("添加日志: %d - %d", entry[0].Index, entry[size-1].Index)
+	// if len(entry) >= 1000 {
+	// 	l.logger.Debugf("添加日志: %d - %d", entry[0].Index, entry[size-1].Index)
+	// }
 
 	l.logs = append(l.logs, entry...)
 }
@@ -67,7 +78,14 @@ func (l *RaftLog) HasPrevLog(lastIndex, lastTerm uint64) bool {
 		return true
 	}
 
-	return l.GetTerm(lastIndex) == lastTerm
+	term := l.GetTerm(lastIndex)
+	b := term == lastTerm
+
+	if !b {
+		l.logger.Debugf("最新日志: %d, 任期: %d ,本地记录任期: %d", lastIndex, lastTerm, term)
+	}
+
+	return b
 }
 
 func (l *RaftLog) RemoveConflictLog(entries []*pb.LogEntry) []*pb.LogEntry {
@@ -120,18 +138,15 @@ func (l *RaftLog) Apply(lastCommit, lastLogIndex uint64) {
 
 	if l.commitIndex > l.lastAppliedIndex {
 		n := 0
-		// canSnapshot := false
 		for i, entry := range l.logs {
 			if l.commitIndex >= entry.Index {
 				n = i
 			} else {
-				// canSnapshot = true
 				break
 			}
 		}
 
 		entries := l.logs[:n+1]
-
 		// l.logger.Debugf("最后提交： %d ,已提交 %d ,提交日志: %d - %d", lastCommit, l.lastAppliedIndex, entries[0].Index, entries[len(entries)-1].Index)
 
 		l.storage.Append(entries)

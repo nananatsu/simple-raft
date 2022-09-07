@@ -39,7 +39,7 @@ type Tree struct {
 	conf    *Config
 	tree    [][]*Node
 	seqNo   []int
-	Compacc chan int
+	compacc chan int
 	logger  *zap.SugaredLogger
 }
 
@@ -139,7 +139,7 @@ func (t *Tree) AddNode(level, seqNo int, size int64, filter map[uint64][]byte, i
 			logger:   t.logger,
 		}
 		t.Insert(ln)
-		t.Compacc <- level
+		t.compacc <- level
 	}
 }
 
@@ -282,53 +282,60 @@ func (t *Tree) PickupCompactionNode(level int) []*Node {
 
 func (t *Tree) CheckCompaction() {
 
-	levelChan := make([]chan struct{}, t.conf.MaxLevel)
+	level0 := make(chan struct{}, 100)
+	levelN := make(chan int, 100)
+	stop := make(chan struct{})
 
-	for i := 0; i < t.conf.MaxLevel; i++ {
-
-		ch := make(chan struct{}, 100)
-		levelChan[i] = ch
-
-		if i == 0 {
-			go func(ch chan struct{}) {
-				for {
-					<-ch
-					if len(t.tree[0]) > 4 {
-						t.Compaction(0)
-					}
+	go func() {
+		for {
+			select {
+			case <-level0:
+				if len(t.tree[0]) > 4 {
+					t.Compaction(0)
 				}
-			}(ch)
+			case <-stop:
+				return
+			}
 
-		} else {
-
-			go func(ch chan struct{}, lv int) {
-				for {
-					<-ch
-					var prevSize int64
-					maxNodeSize := int64(t.conf.SstSize * int(math.Pow10(lv+1)))
-					for {
-						var totalSize int64
-						for _, node := range t.tree[lv] {
-							totalSize += node.FileSize
-						}
-						// t.logger.infof("Level %d 当前大小: %d M, 最大大小: %d M\n", lv, totalSize/(1024*1024), maxNodeSize/(1024*1024))
-
-						if totalSize > maxNodeSize && (prevSize == 0 || totalSize < prevSize) {
-							t.Compaction(lv)
-							prevSize = totalSize
-						} else {
-							break
-						}
-					}
-				}
-			}(ch, i)
 		}
-	}
+	}()
 
-	for {
-		lv := <-t.Compacc
-		levelChan[lv] <- struct{}{}
-	}
+	go func() {
+		for {
+			select {
+			case lv := <-levelN:
+				var prevSize int64
+				maxNodeSize := int64(t.conf.SstSize * int(math.Pow10(lv+1)))
+				for {
+					var totalSize int64
+					for _, node := range t.tree[lv] {
+						totalSize += node.FileSize
+					}
+					// t.logger.infof("Level %d 当前大小: %d M, 最大大小: %d M\n", lv, totalSize/(1024*1024), maxNodeSize/(1024*1024))
+
+					if totalSize > maxNodeSize && (prevSize == 0 || totalSize < prevSize) {
+						t.Compaction(lv)
+						prevSize = totalSize
+					} else {
+						break
+					}
+				}
+			case <-stop:
+				return
+			}
+		}
+	}()
+
+	go func() {
+		for {
+			lv := <-t.compacc
+			if lv == 0 {
+				level0 <- struct{}{}
+			} else {
+				levelN <- lv
+			}
+		}
+	}()
 }
 
 func (t *Tree) Get(key []byte) (value []byte) {
@@ -415,12 +422,12 @@ func NewTree(dir string, conf *Config, logger *zap.SugaredLogger) *Tree {
 		conf:    conf,
 		tree:    levelTree,
 		seqNo:   seqNos,
-		Compacc: compactionChan,
+		compacc: compactionChan,
 		logger:  logger,
 	}
 
 	// for i:=0;i< runtime.NumCPU() -1;i++{
-	go lt.CheckCompaction()
+	lt.CheckCompaction()
 	// }
 	return lt
 }

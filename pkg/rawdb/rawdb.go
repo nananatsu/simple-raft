@@ -148,7 +148,6 @@ func NewRawDB(dir string, conf *Config, logger *zap.SugaredLogger) *DB {
 		memdb = NewMemDB(&MemDBConfig{Dir: dir, SeqNo: maxSeqNo + 1, WalFlushInterval: conf.MemDBFlushInterval}, logger)
 	}
 
-	lt.Compacc <- 0
 	db := &DB{dir: dir, memdb: memdb, immdb: immutableDBs, lsmTree: lt, conf: conf}
 
 	if len(db.immdb) > 0 {

@@ -22,6 +22,7 @@ type MemDB struct {
 	db     *skiplist.SkipList
 	walw   *wal.WalWriter
 	ticker *time.Ticker
+	stop   chan struct{}
 	logger *zap.SugaredLogger
 }
 
@@ -44,6 +45,10 @@ func (db *MemDB) GetMax() ([]byte, []byte) {
 	return db.db.GetMax()
 }
 
+func (db *MemDB) GetRange(start, end []byte) [][][]byte {
+	return db.db.GetRange(start, end)
+}
+
 func (db *MemDB) Size() int {
 	return db.db.Size()
 }
@@ -59,19 +64,28 @@ func (db *MemDB) GetDir() string {
 func (db *MemDB) Sync() {
 	go func() {
 		for {
-			<-db.ticker.C
-			if db.walw != nil {
-				db.walw.Flush()
+			select {
+			case <-db.ticker.C:
+				if db.walw != nil {
+					db.walw.Flush()
+				}
+			case <-db.stop:
+				if db.walw != nil {
+					db.walw.Flush()
+				}
+				return
 			}
 		}
 	}()
 }
 
 func (db *MemDB) Finish() {
+	db.stop <- struct{}{}
 	if db.walw != nil {
 		db.walw.Finish()
 	}
 	db.ticker.Stop()
+	close(db.stop)
 }
 
 func RestoreMemDB(conf *MemDBConfig, logger *zap.SugaredLogger) (*MemDB, error) {
@@ -108,6 +122,7 @@ func RestoreMemDB(conf *MemDBConfig, logger *zap.SugaredLogger) (*MemDB, error) 
 		conf:   conf,
 		db:     sl,
 		walw:   w,
+		ticker: time.NewTicker(conf.WalFlushInterval),
 		logger: logger,
 	}
 	db.Sync()
@@ -127,6 +142,7 @@ func NewMemDB(conf *MemDBConfig, logger *zap.SugaredLogger) *MemDB {
 		db:     skiplist.NewSkipList(),
 		walw:   wal.NewWalWriter(fd, logger),
 		ticker: time.NewTicker(conf.WalFlushInterval),
+		stop:   make(chan struct{}),
 		logger: logger,
 	}
 
