@@ -4,6 +4,7 @@ import (
 	"context"
 	"kvdb/pkg/raft"
 	pb "kvdb/pkg/raftpb"
+	"strconv"
 	"sync"
 	"time"
 
@@ -13,88 +14,93 @@ import (
 )
 
 type Peer struct {
-	mu sync.Mutex
-
-	id      uint64
-	address string
-
-	node *raft.RaftNode
-
+	mu         sync.Mutex
+	id         uint64
+	address    string
+	node       *raft.RaftNode
+	close      bool
 	connecting bool
 	client     pb.RaftInternalClient
 	sendClient pb.RaftInternal_SendClient
-
-	Recvc     chan *pb.RaftMessage
-	Propc     chan *pb.RaftMessage
-	Sendc     chan *pb.RaftMessage
-	PropSendc chan *pb.RaftMessage
-
-	logger *zap.SugaredLogger
+	recvc      chan *pb.RaftMessage
+	propc      chan *pb.RaftMessage
+	sendc      chan *pb.RaftMessage
+	stopc      chan struct{}
+	logger     *zap.SugaredLogger
 }
 
 func (p *Peer) Send(msg *pb.RaftMessage) {
-
-	if msg.MsgType == pb.MessageType_PROPOSE {
-		p.PropSendc <- msg
-	} else {
-		p.Sendc <- msg
-	}
+	p.sendc <- msg
 }
 
 func (p *Peer) Process(msg *pb.RaftMessage) {
 	if msg.MsgType == pb.MessageType_PROPOSE {
-		p.Propc <- msg
+		p.propc <- msg
 	} else {
-		p.Recvc <- msg
+		p.recvc <- msg
 	}
 }
 
 func (p *Peer) Start() {
-	// go p.Connect()
-
 	go func() {
 		for {
-			msg := <-p.Recvc
-			p.node.HandleMsg(msg)
-		}
-	}()
-
-	go func() {
-		for {
-			msg := <-p.Propc
-			p.node.HandlePropose(msg)
-		}
-	}()
-
-	go func() {
-		var propSendc chan *pb.RaftMessage
-		for {
-			var msg *pb.RaftMessage
-			if len(p.Sendc) > 0 {
-				propSendc = nil
-			} else {
-				propSendc = p.PropSendc
-			}
-
 			select {
-			case msg = <-p.Sendc:
-			case msg = <-propSendc:
+			case <-p.stopc:
+				return
+			case msg := <-p.recvc:
+				p.node.HandleMsg(msg)
 			}
+		}
+	}()
 
-			if p.sendClient == nil {
-				p.Connect()
+	go func() {
+		for {
+			select {
+			case <-p.stopc:
+				return
+			case msg := <-p.propc:
+				p.node.HandlePropose(msg)
 			}
+		}
+	}()
 
-			if err := p.sendClient.Send(msg); err != nil {
-				p.logger.Errorf("发送消息失败,消息类型: %s ,日志数量: %d %v", msg.MsgType.Descriptor().FullName(), len(msg.Entry), err)
+	go func() {
+		for {
+			select {
+			case <-p.stopc:
+				return
+			case msg := <-p.sendc:
+				if msg == nil {
+					continue
+				}
+				if p.sendClient == nil {
+					p.Connect()
+				}
 
-				if !p.connecting {
-					p.Reconnect()
+				if err := p.sendClient.Send(msg); err != nil {
+					p.logger.Errorf("发送消息 %s 失败 ,日志数量: %d %v", msg.MsgType.String(), len(msg.Entry), err)
+
+					if !p.connecting {
+						p.Reconnect()
+					}
 				}
 			}
 		}
 	}()
 
+}
+
+func (p *Peer) Stop() {
+
+	p.logger.Infof("关闭节点 %s连接", strconv.FormatUint(p.id, 16))
+	p.stopc <- struct{}{}
+	close(p.recvc)
+	close(p.propc)
+	close(p.sendc)
+	close(p.stopc)
+	if p.sendClient != nil {
+		p.sendClient.CloseSend()
+	}
 }
 
 func (p *Peer) Reconnect() (err error) {
@@ -114,8 +120,12 @@ func (p *Peer) Reconnect() (err error) {
 		p.logger.Errorf("连接raft服务 %s失败: %v", p.address, err)
 
 		count++
-		time.Sleep(count * time.Second)
-		p.sendClient, err = p.client.Send(context.Background())
+		select {
+		case <-time.After(count * time.Second):
+			p.sendClient, err = p.client.Send(context.Background())
+		case <-p.stopc:
+			return
+		}
 	}
 	p.connecting = false
 	return
@@ -139,21 +149,15 @@ func (p *Peer) Connect() error {
 }
 
 func NewPeer(id uint64, address string, node *raft.RaftNode, logger *zap.SugaredLogger) *Peer {
-
-	propc := make(chan *pb.RaftMessage, 1000)
-	recvc := make(chan *pb.RaftMessage, 1000)
-	sendc := make(chan *pb.RaftMessage, 1000)
-	propSendc := make(chan *pb.RaftMessage, 1000)
-
 	p := &Peer{
-		id:        id,
-		address:   address,
-		node:      node,
-		Recvc:     recvc,
-		Propc:     propc,
-		Sendc:     sendc,
-		PropSendc: propSendc,
-		logger:    logger,
+		id:      id,
+		address: address,
+		node:    node,
+		recvc:   make(chan *pb.RaftMessage),
+		propc:   make(chan *pb.RaftMessage),
+		sendc:   make(chan *pb.RaftMessage),
+		stopc:   make(chan struct{}),
+		logger:  logger,
 	}
 	p.Start()
 

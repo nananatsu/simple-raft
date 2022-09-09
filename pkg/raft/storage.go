@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"go.uber.org/zap"
+	"google.golang.org/protobuf/proto"
 )
 
 const LastLogKey = "___last___include___"
@@ -23,6 +24,8 @@ type Storage interface {
 	GetEntries(startIndex, endIndex uint64) []*pb.LogEntry
 	GetTerm(index uint64) uint64
 	GetLast() (uint64, uint64)
+	Notify() chan []*pb.MemberChange
+	Close()
 }
 
 type RaftStorage struct {
@@ -30,7 +33,12 @@ type RaftStorage struct {
 	db         *rawdb.MemDB
 	snap       *Snapshot
 	keyScratch [20]byte
+	changec    chan []*pb.MemberChange
 	logger     *zap.SugaredLogger
+}
+
+func (rs *RaftStorage) Notify() chan []*pb.MemberChange {
+	return rs.changec
 }
 
 func (rs *RaftStorage) Append(entries []*pb.LogEntry) {
@@ -38,9 +46,16 @@ func (rs *RaftStorage) Append(entries []*pb.LogEntry) {
 	defer rs.mu.Unlock()
 
 	for _, entry := range entries {
+		if entry.Type == pb.EntryType_MEMBER_CHNAGE {
+			var changeCol pb.MemberChangeCollection
+			proto.Unmarshal(entry.Data, &changeCol)
+			rs.changec <- changeCol.Changes
+			// continue
+		}
 		binary.BigEndian.PutUint64(rs.keyScratch[0:], entry.Index)
-		n := binary.PutUvarint(rs.keyScratch[8:], entry.Term)
-		rs.db.Put(rs.keyScratch[:8], append(rs.keyScratch[8:8+n], entry.Data...))
+		rs.keyScratch[8] = uint8(entry.Type)
+		n := binary.PutUvarint(rs.keyScratch[9:], entry.Term)
+		rs.db.Put(rs.keyScratch[:8], append(rs.keyScratch[8:8+n+1], entry.Data...))
 	}
 
 	if rs.db.Size() > logSnapShotSize {
@@ -58,7 +73,7 @@ func (rs *RaftStorage) GetTerm(index uint64) (term uint64) {
 	value := rs.db.Get(rs.keyScratch[:8])
 
 	if value != nil {
-		term, _ = binary.Uvarint(value)
+		term, _ = binary.Uvarint(value[1:])
 	}
 	return
 }
@@ -67,7 +82,7 @@ func (rs *RaftStorage) GetLast() (uint64, uint64) {
 	k, v := rs.db.GetMax()
 	if len(k) > 0 {
 		index := binary.BigEndian.Uint64(k)
-		term, _ := binary.Uvarint(v)
+		term, _ := binary.Uvarint(v[1:])
 		return index, term
 	}
 	return rs.snap.latIncludeIndex, rs.snap.lastIncludeTerm
@@ -77,6 +92,7 @@ func (rs *RaftStorage) GetLast() (uint64, uint64) {
 func (rs *RaftStorage) GetEntries(startIndex, endIndex uint64) []*pb.LogEntry {
 
 	if startIndex < rs.snap.latIncludeIndex {
+		rs.logger.Infof("请求日志 %d 存在于snapshot: %d", startIndex, rs.snap.latIncludeIndex)
 		return nil
 	}
 
@@ -88,16 +104,24 @@ func (rs *RaftStorage) GetEntries(startIndex, endIndex uint64) []*pb.LogEntry {
 
 	ret := make([]*pb.LogEntry, len(kvs))
 	for i, kv := range kvs {
-		termUint, n := binary.Uvarint(kv[1])
+		entryType := uint8(kv[1][0])
+		termUint, n := binary.Uvarint(kv[1][1:])
 		index := binary.BigEndian.Uint64(kv[0])
-		// rs.logger.Debugf("读取日志: %d ,任期: %d", index, termUint)
-		ret[i] = &pb.LogEntry{Index: index, Term: termUint, Data: kv[1][n:]}
+		ret[i] = &pb.LogEntry{Type: pb.EntryType(entryType), Index: index, Term: termUint, Data: kv[1][n+1:]}
 	}
 	if len(ret) > 0 {
-		rs.logger.Warnf("加载已提交日志: %d~%d (总数: %d) ,请求日志: %d~%d", ret[0].Index, ret[size-1].Index, size, startIndex, endIndex)
+		rs.logger.Warnf("请求日志: %d~%d ,实际加载: %d~%d (总数: %d)", startIndex, endIndex, ret[0].Index, ret[size-1].Index, size)
+	} else {
+		rs.logger.Warnf("请求日志: %d~%d ,实际加载： 0", startIndex, endIndex)
 	}
 
 	return ret
+}
+
+func (rs *RaftStorage) Close() {
+	close(rs.changec)
+	rs.db.Close()
+	rs.snap.Close()
 }
 
 func NewRaftStorage(dir string, logger *zap.SugaredLogger) *RaftStorage {
@@ -147,9 +171,10 @@ func NewRaftStorage(dir string, logger *zap.SugaredLogger) *RaftStorage {
 	}
 
 	s := &RaftStorage{
-		db:     db,
-		snap:   NewSnapshot(dir, logger),
-		logger: logger,
+		db:      db,
+		snap:    NewSnapshot(dir, logger),
+		changec: make(chan []*pb.MemberChange),
+		logger:  logger,
 	}
 
 	for _, md := range memdbs {
@@ -159,7 +184,7 @@ func NewRaftStorage(dir string, logger *zap.SugaredLogger) *RaftStorage {
 }
 
 func Decode(entry []byte) ([]byte, []byte) {
-	_, n := binary.Uvarint(entry)
+	var n int
 	keyLen, m := binary.Uvarint(entry[n:])
 	n += m
 	valueLen, m := binary.Uvarint(entry[n:])

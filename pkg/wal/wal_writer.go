@@ -106,6 +106,10 @@ func (w *WalWriter) Flush() {
 	}
 }
 
+func (w *WalWriter) Close() {
+	w.fd.Close()
+}
+
 func (w *WalWriter) Finish() {
 	file := w.fd.Name()
 	w.fd.Close()

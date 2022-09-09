@@ -3,6 +3,7 @@ package raft
 import (
 	"encoding/json"
 	"math/rand"
+	"strconv"
 
 	pb "kvdb/pkg/raftpb"
 
@@ -20,74 +21,65 @@ const (
 )
 
 type Raft struct {
-	// mu               sync.RWMutex
 	id                    uint64
 	state                 RaftState
 	leader                uint64
 	currentTerm           uint64
 	voteFor               uint64
-	voteResult            map[uint64]bool
 	raftlog               *RaftLog
-	replica               map[uint64]*ReplicaProgress
+	cluster               *Cluster
 	electionTimeout       int
 	heartbeatTimeout      int
 	randomElectionTimeout int
 	electtionTick         int
 	hearbeatTick          int
 	Tick                  func()
-	HandleMsg             func(*pb.RaftMessage)
+	hanbleMessage         func(*pb.RaftMessage)
 	Msg                   []*pb.RaftMessage
 	logger                *zap.SugaredLogger
 }
 
 func (r *Raft) SwitchCandidate() {
-	// r.mu.Lock()
-	// defer r.mu.Unlock()
-
 	r.state = CANDIDATE_STATE
 	r.leader = 0
 	r.randomElectionTimeout = r.electionTimeout + rand.Intn(r.electionTimeout)
 	r.Tick = r.TickElection
-	r.HandleMsg = r.HandleCandidateMessage
+	r.hanbleMessage = r.HandleCandidateMessage
 
 	lastIndex, _ := r.raftlog.GetLastLogIndexAndTerm()
-	for _, rp := range r.replica {
-		rp.NextIndex = lastIndex + 1
-		rp.MatchIndex = lastIndex
-	}
+
+	r.cluster.Foreach(func(_ uint64, p *ReplicaProgress) {
+		p.NextIndex = lastIndex + 1
+		p.MatchIndex = lastIndex
+	})
 
 	r.BroadcastRequestVote()
 	r.logger.Debugf("成为 Candidate, 任期: %d", r.currentTerm)
 }
 
 func (r *Raft) SwitchFollower(leaderId, term uint64) {
-	// r.mu.Lock()
-	// defer r.mu.Unlock()
 
-	r.logger.Debugf("成为 Follower, Leader: %d, 任期: %d", leaderId, term)
+	r.logger.Debugf("成为 Follower, Leader: %s, 任期: %d", strconv.FormatUint(leaderId, 16), term)
 
 	r.state = FOLLOWER_STATE
 	r.leader = leaderId
 	r.currentTerm = term
 	r.voteFor = 0
-	r.voteResult = make(map[uint64]bool)
+	r.cluster.ResetVoteResult()
 	r.randomElectionTimeout = r.electionTimeout + rand.Intn(r.electionTimeout)
 	r.Tick = r.TickElection
-	r.HandleMsg = r.HandleFollowerMessage
+	r.hanbleMessage = r.HandleFollowerMessage
 }
 
 func (r *Raft) SwitchLeader() {
-	// r.mu.Lock()
-	// defer r.mu.Unlock()
-
 	r.logger.Debugf("成为 Leader, 任期: %d", r.currentTerm)
 
 	r.state = LEADER_STATE
 	r.leader = r.id
 	r.voteFor = 0
-	r.voteResult = make(map[uint64]bool)
+	r.cluster.ResetVoteResult()
 	r.Tick = r.TickHeartbeat
-	r.HandleMsg = r.HandleLeaderMessage
+	r.hanbleMessage = r.HandleLeaderMessage
 	r.BroadcastHeartbeat()
 }
 
@@ -97,22 +89,16 @@ func (r *Raft) TickHeartbeat() {
 	if r.hearbeatTick >= r.heartbeatTimeout {
 		r.hearbeatTick = 0
 		r.BroadcastHeartbeat()
-		for sid, rp := range r.replica {
-			if sid == r.id {
-				continue
+		r.cluster.Foreach(func(id uint64, p *ReplicaProgress) {
+			if id == r.id {
+				return
 			}
-			b := rp.CanSend()
 
-			// size := len(rp.pending)
-			// if size > 0 {
-			// 	r.logger.Debugf("节点 %d消息发送进度, 活跃状态: %t 未确认：%d~%d ", sid, rp.active, rp.pending[0], rp.pending[size-1])
-			// }
-
-			if !b {
-				rp.pending = nil
-				r.SendAppendEntries(sid)
+			if p.IsPause() {
+				p.pending = nil
+				r.SendAppendEntries(id)
 			}
-		}
+		})
 	}
 
 }
@@ -134,16 +120,18 @@ func (r *Raft) TickElection() {
 
 func (r *Raft) HandleMessage(msg *pb.RaftMessage) {
 
-	if msg.Term < r.currentTerm {
+	if msg == nil {
 		return
 	}
 
+	if msg.MsgType == pb.MessageType_APPEND_ENTRY || msg.MsgType == pb.MessageType_APPEND_ENTRY_RESP {
+		r.logger.Debugf("收到 %s ", msg.String())
+	}
+
+	r.hanbleMessage(msg)
 }
 
 func (r *Raft) HandleCandidateMessage(msg *pb.RaftMessage) {
-
-	// r.logger.Debugf("收到 %s ", msg.String())
-
 	switch msg.MsgType {
 	case pb.MessageType_VOTE:
 		b := r.ReciveRequestVote(msg.Term, msg.From, msg.LastLogTerm, msg.LastLogIndex)
@@ -155,14 +143,12 @@ func (r *Raft) HandleCandidateMessage(msg *pb.RaftMessage) {
 	case pb.MessageType_HEARTBEAT:
 		b := r.ReciveHeartbeat(msg.Term, msg.LastLogTerm, msg.LastLogIndex, msg.LastCommit)
 		if b {
-			// r.logger.Debugf("收到心跳,切换为Follower")
 			r.SwitchFollower(msg.From, msg.Term)
 		}
 		r.SendMessage(pb.MessageType_HEARTBEAT_RESP, msg.From, 0, 0, 0, nil, b)
 	case pb.MessageType_APPEND_ENTRY:
 		b := r.ReciveAppendEntries(msg.From, msg.Term, msg.LastLogTerm, msg.LastLogIndex, msg.LastCommit, msg.Entry)
 		if b {
-			// r.logger.Debugf("收到日志,切换为Follower")
 			r.SwitchFollower(msg.From, msg.Term)
 		}
 	default:
@@ -177,9 +163,6 @@ func (r *Raft) HandleCandidateMessage(msg *pb.RaftMessage) {
 }
 
 func (r *Raft) HandleFollowerMessage(msg *pb.RaftMessage) {
-
-	// r.logger.Debugf("收到 %s ", msg.String())
-
 	switch msg.MsgType {
 	case pb.MessageType_VOTE:
 		b := r.ReciveRequestVote(msg.Term, msg.From, msg.LastLogTerm, msg.LastLogIndex)
@@ -212,9 +195,6 @@ func (r *Raft) HandleFollowerMessage(msg *pb.RaftMessage) {
 }
 
 func (r *Raft) HandleLeaderMessage(msg *pb.RaftMessage) {
-
-	// r.logger.Debugf("收到 %s ", msg.String())
-
 	switch msg.MsgType {
 	case pb.MessageType_PROPOSE:
 		r.AppendEntry(msg.Entry)
@@ -235,70 +215,75 @@ func (r *Raft) HandleLeaderMessage(msg *pb.RaftMessage) {
 }
 
 func (r *Raft) AppendEntry(entries []*pb.LogEntry) {
-	// r.mu.Lock()
-	// defer r.mu.Unlock()
 
 	lastLogIndex, _ := r.raftlog.GetLastLogIndexAndTerm()
 	for i, entry := range entries {
 		entry.Index = lastLogIndex + 1 + uint64(i)
 		entry.Term = r.currentTerm
-	}
 
+		if entry.Type == pb.EntryType_MEMBER_CHNAGE {
+			if r.cluster.pendingChangeIndex > r.raftlog.lastAppliedIndex {
+				r.logger.Warnf("集群变更成员中，不接受新变更请求")
+				entry.Type = pb.EntryType_NORMAL
+			} else {
+				r.cluster.pendingChangeIndex = entry.Index
+			}
+		}
+	}
 	r.raftlog.AppendEntry(entries)
-	r.replica[r.id].NextIndex = lastLogIndex + uint64(len(entries))
-	r.replica[r.id].MatchIndex = lastLogIndex + uint64(len(entries)) - 1
+	r.cluster.UpdateLogIndex(r.id, entries[len(entries)-1].Index)
 
 	r.BroadcastAppendEntries()
+}
 
+func (r *Raft) ChangeMember(change []*pb.MemberChange) error {
+	return r.cluster.ChangeMember(change)
 }
 
 func (r *Raft) BroadcastAppendEntries() {
-	for id := range r.replica {
+	r.cluster.Foreach(func(id uint64, _ *ReplicaProgress) {
 		if id == r.id {
-			continue
+			return
 		}
 		r.SendAppendEntries(id)
-	}
+	})
 }
 
 func (r *Raft) BroadcastHeartbeat() {
-	for id, rep := range r.replica {
+	r.cluster.Foreach(func(id uint64, p *ReplicaProgress) {
 		if id == r.id {
-			continue
+			return
 		}
-		lastLogIndex := rep.NextIndex - 1
+		lastLogIndex := p.NextIndex - 1
 		lastLogTerm := r.raftlog.GetTerm(lastLogIndex)
 		r.SendMessage(pb.MessageType_HEARTBEAT, id, lastLogIndex, lastLogTerm, r.raftlog.commitIndex, nil, false)
-	}
+	})
 }
 
 func (r *Raft) BroadcastRequestVote() {
-	// r.mu.Lock()
-	// defer r.mu.Unlock()
-
 	r.currentTerm++
 	r.voteFor = r.id
-	r.voteResult = make(map[uint64]bool)
-	r.voteResult[r.id] = true
+	r.cluster.ResetVoteResult()
+	r.cluster.Vote(r.id, true)
 
-	for id := range r.replica {
+	r.cluster.Foreach(func(id uint64, p *ReplicaProgress) {
 		if id == r.id {
-			continue
+			return
 		}
 		lastLogIndex, lastLogTerm := r.raftlog.GetLastLogIndexAndTerm()
 		r.SendMessage(pb.MessageType_VOTE, id, lastLogIndex, lastLogTerm, 0, nil, false)
-	}
+	})
+
 }
 
 func (r *Raft) SendAppendEntries(to uint64) {
 
-	b := r.replica[to].CanSend()
-	if !b {
-		// r.logger.Debugf("节点 %d 停止发送消息, 活跃状态: %t ,未确认消息 %d ", to, r.replica[to].active, len(r.replica[to].pending))
+	if r.cluster.IsPause(to) {
+		r.logger.Debugf("节点 %s 停止发送消息, 上次发送状态: %t ,未确认消息 %d ", strconv.FormatUint(to, 16), r.cluster.progress[to].prevResp, len(r.cluster.progress[to].pending))
 		return
 	}
 
-	nextIndex := r.replica[to].NextIndex
+	nextIndex := r.cluster.GetNextIndex(to)
 	lastLogIndex := nextIndex - 1
 	lastLogTerm := r.raftlog.GetTerm(lastLogIndex)
 
@@ -306,18 +291,20 @@ func (r *Raft) SendAppendEntries(to uint64) {
 	entries := r.raftlog.GetEntries(nextIndex)
 	size := len(entries)
 	if size == 0 {
-		// r.logger.Debugf("发送日志到 %d, 范围 %d ~ %d ,nextIndex: %d", to, entries[0].Index, entries[size-1].Index, nextIndex)
+		r.logger.Debugf("节点 %s 下次发送: %d, 当前已同步到最新日志", strconv.FormatUint(to, 16), nextIndex)
 		return
 	}
 
-	r.replica[to].AppendEntry(entries[size-1].Index)
+	r.logger.Debugf("发送日志到 %s, 范围 %d ~ %d ", strconv.FormatUint(to, 16), entries[0].Index, entries[size-1].Index)
+
+	r.cluster.AppendEntry(to, entries[size-1].Index)
 	r.SendMessage(pb.MessageType_APPEND_ENTRY, to, lastLogIndex, lastLogTerm, r.raftlog.commitIndex, entries, false)
 
 }
 
 func (r *Raft) SendMessage(msgType pb.MessageType, to, lastLogIndex, lastLogTerm, LastCommit uint64, entry []*pb.LogEntry, success bool) {
 
-	// r.logger.Debugf("发送: %s 到: %d", msgType.string(), to)
+	// r.logger.Debugf("发送: %s 到: %s", msgType.string(), strconv.FormatUint(to, 16))
 	r.Msg = append(r.Msg, &pb.RaftMessage{
 		MsgType:      msgType,
 		Term:         r.currentTerm,
@@ -333,54 +320,40 @@ func (r *Raft) SendMessage(msgType pb.MessageType, to, lastLogIndex, lastLogTerm
 
 func (r *Raft) ReciveVoteResult(from, term, lastLogIndex, lastLogTerm uint64, success bool) {
 
-	r.voteResult[from] = success
-	r.replica[from].Reset(lastLogIndex)
+	r.cluster.Vote(from, success)
+	r.cluster.ResetLogIndex(from, lastLogIndex)
 
-	// r.logger.Debugf("更新节点 %d, 最新下次发送日志为%d", from, lastLogIndex+1)
-
-	granted := 0
-	reject := 0
-	for _, v := range r.voteResult {
-		if v {
-			granted++
-		} else {
-			reject++
-		}
-	}
-	most := len(r.replica)/2 + 1
-
-	r.logger.Debugf("节点发起投票结果, 接受: %d ,拒绝: %d , 法定数量: %d", granted, reject, most)
-	if granted >= most {
+	voteRes := r.cluster.CheckVoteResult()
+	if voteRes == VoteWon {
+		r.logger.Debugf("节点 %s 发起投票, 赢得选取", strconv.FormatUint(from, 16))
 		r.SwitchLeader()
-	} else if reject >= most {
+	} else if voteRes == VoteLost {
+		r.logger.Debugf("节点 %s 发起投票, 输掉选取", strconv.FormatUint(from, 16))
 		r.voteFor = 0
-		r.voteResult = make(map[uint64]bool)
+		r.cluster.ResetVoteResult()
 	}
 }
 
 func (r *Raft) ReciveAppendEntriesResult(from, term, lastLogIndex uint64, success bool) {
-	// r.mu.Lock()
-	// defer r.mu.Unlock()
-
 	if success {
-		r.replica[from].AppendEntryResp(lastLogIndex)
+
+		prevResp := r.cluster.IsPause(from)
+		r.cluster.AppendEntryResp(from, lastLogIndex)
 		if lastLogIndex > r.raftlog.commitIndex {
 			// 取已同步索引更新到lastcommit
-			logCount := 0
-			for _, rep := range r.replica {
-				if lastLogIndex <= rep.MatchIndex {
-					logCount++
-				}
-			}
-			if logCount >= len(r.replica)/2+1 {
+			if r.cluster.CheckCommit(lastLogIndex) {
 				r.raftlog.Apply(lastLogIndex, lastLogIndex)
-				r.SendAppendEntries(from)
+				r.BroadcastAppendEntries()
 			}
 		}
-	} else {
-		r.logger.Infof("节点 %d 追加日志失败, Leader记录节点最新日志: %d ,节点最新日志: %d ", from, r.replica[from].NextIndex-1, lastLogIndex)
+		if prevResp || r.cluster.GetNextIndex(from) < r.raftlog.commitIndex {
+			r.SendAppendEntries(from)
+		}
 
-		r.replica[from].Reset(lastLogIndex)
+	} else {
+		r.logger.Infof("节点 %s 追加日志失败, Leader记录节点最新日志: %d ,节点最新日志: %d ", strconv.FormatUint(from, 16), r.cluster.GetNextIndex(from)-1, lastLogIndex)
+
+		r.cluster.ResetLogIndex(from, lastLogIndex)
 		r.SendAppendEntries(from)
 	}
 }
@@ -395,9 +368,6 @@ func (r *Raft) ReciveHeartbeat(mTerm, mLastLogTerm, mLastLogIndex, mLastCommit u
 }
 
 func (r *Raft) ReciveAppendEntries(mLeader, mTerm, mLastLogTerm, mLastLogIndex, mLastCommit uint64, mEntries []*pb.LogEntry) (success bool) {
-	// r.mu.Lock()
-	// defer r.mu.Unlock()
-
 	if mTerm < r.currentTerm {
 		r.logger.Infof("消息任期%d 小于当前任期 %d", mTerm, r.currentTerm)
 		success = false
@@ -431,38 +401,26 @@ func (r *Raft) ReciveRequestVote(mTerm, mCandidateId, mLastLogTerm, mLastLogInde
 		}
 	}
 
-	r.logger.Debugf("候选人: %d, 投票: %t ,任期: %d ,最新日志: %d, 最新日志任期: %d, 节点最新日志: %d ,节点最新日志任期： %d ", mCandidateId, success, mTerm, mLastLogIndex, mLastLogTerm, lastLogIndex, lastLogTerm)
+	r.logger.Debugf("候选人: %s, 投票: %t ,任期: %d ,最新日志: %d, 最新日志任期: %d, 节点最新日志: %d ,节点最新日志任期： %d ", strconv.FormatUint(mCandidateId, 16), success, mTerm, mLastLogIndex, mLastLogTerm, lastLogIndex, lastLogTerm)
 	r.SendMessage(pb.MessageType_VOTE_RES, mCandidateId, lastLogIndex, lastLogTerm, 0, nil, success)
 	return
 }
 
 func NewRaft(id uint64, storage Storage, peers []uint64, logger *zap.SugaredLogger) *Raft {
-	if logger == nil {
-		zapLogger, _ := zap.NewDevelopment()
-		logger = zapLogger.Sugar()
-	}
 
 	raftlog := NewRaftLog(storage, logger)
-
-	replica := make(map[uint64]*ReplicaProgress)
-	for _, sid := range peers {
-		replica[sid] = &ReplicaProgress{
-			NextIndex:  raftlog.commitIndex + 1,
-			MatchIndex: raftlog.commitIndex,
-		}
-	}
 
 	raft := &Raft{
 		id:               id,
 		currentTerm:      raftlog.lastAppliedTerm,
 		raftlog:          raftlog,
-		replica:          replica,
+		cluster:          NewCluster(peers, raftlog.commitIndex, logger),
 		electionTimeout:  10,
 		heartbeatTimeout: 5,
 		logger:           logger,
 	}
 
-	logger.Infof("raft初始化,id: %d,任期: %d,最后提交: %d", raft.id, raft.currentTerm, raft.raftlog.commitIndex)
+	logger.Infof("raft初始化,id: %s,任期: %d,最后提交: %d", strconv.FormatUint(raft.id, 16), raft.currentTerm, raft.raftlog.commitIndex)
 	raft.SwitchFollower(0, raft.currentTerm)
 	return raft
 }

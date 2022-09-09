@@ -8,20 +8,19 @@ import (
 )
 
 type RaftStatus struct {
-	RecvcSize      int
-	PropcSize      int
-	SendcSize      int
 	PendingLogSize int
 	AppliedLogSize uint64
 }
 
 type RaftNode struct {
-	raft   *Raft
-	Recvc  chan *pb.RaftMessage
-	Propc  chan *pb.RaftMessage
-	Sendc  chan []*pb.RaftMessage
-	ticker *time.Ticker
-	logger *zap.SugaredLogger
+	raft    *Raft
+	recvc   chan *pb.RaftMessage
+	propc   chan *pb.RaftMessage
+	sendc   chan []*pb.RaftMessage
+	changec chan []*pb.MemberChange
+	stopc   chan struct{}
+	ticker  *time.Ticker
+	logger  *zap.SugaredLogger
 }
 
 func (n *RaftNode) Start() {
@@ -32,50 +31,65 @@ func (n *RaftNode) Start() {
 			var msgs []*pb.RaftMessage
 			if len(n.raft.Msg) > 0 {
 				msgs = n.raft.Msg
-				sendc = n.Sendc
+				sendc = n.sendc
 			} else {
 				sendc = nil
 			}
 
-			if len(n.Recvc) > 0 || len(sendc) > 0 {
+			if len(n.recvc) > 0 || len(sendc) > 0 {
 				propc = nil
 			} else {
-				propc = n.Propc
+				propc = n.propc
 			}
 
 			select {
 			case <-n.ticker.C:
 				n.raft.Tick()
-			case msg := <-n.Recvc:
-				n.raft.HandleMsg(msg)
+			case msg := <-n.recvc:
+				n.raft.HandleMessage(msg)
 			case msg := <-propc:
-				n.raft.HandleMsg(msg)
+				n.raft.HandleMessage(msg)
 			case sendc <- msgs:
 				n.raft.Msg = nil
+			case changes := <-n.changec:
+				n.raft.ChangeMember(changes)
+			case <-n.stopc:
+				return
 			}
 		}
 	}()
 }
 
 func (n *RaftNode) HandlePropose(msg *pb.RaftMessage) {
-	n.Propc <- msg
+	n.propc <- msg
 }
 
-func (n *RaftNode) Propose(data []byte) {
+func (n *RaftNode) Propose(entries []*pb.LogEntry) {
 	msg := &pb.RaftMessage{
 		MsgType: pb.MessageType_PROPOSE,
 		Term:    n.raft.currentTerm,
-		Entry:   []*pb.LogEntry{{Data: data}},
+		Entry:   entries,
 	}
 	n.HandlePropose(msg)
 }
 
+func (n *RaftNode) ChangeMember(changes []*pb.MemberChange) {
+	n.changec <- changes
+}
+
 func (n *RaftNode) HandleMsg(msg *pb.RaftMessage) {
-	n.Recvc <- msg
+	n.recvc <- msg
+}
+
+func (n *RaftNode) Poll() chan []*pb.RaftMessage {
+	return n.sendc
 }
 
 func (n *RaftNode) Ready() bool {
-	return n.raft.state == LEADER_STATE || (n.raft.state == FOLLOWER_STATE && n.raft.leader != 0)
+	if n.raft.cluster.pendingChangeIndex <= n.raft.raftlog.lastAppliedIndex {
+		return n.raft.state == LEADER_STATE || (n.raft.state == FOLLOWER_STATE && n.raft.leader != 0)
+	}
+	return false
 }
 
 func (n *RaftNode) IsLeader() bool {
@@ -84,30 +98,32 @@ func (n *RaftNode) IsLeader() bool {
 
 func (n *RaftNode) Status() *RaftStatus {
 	return &RaftStatus{
-		RecvcSize:      len(n.Recvc),
-		PropcSize:      len(n.Propc),
-		SendcSize:      len(n.Sendc),
 		PendingLogSize: len(n.raft.raftlog.logs),
 		AppliedLogSize: n.raft.raftlog.lastAppliedIndex,
 	}
 }
 
+func (n *RaftNode) Close() {
+	n.stopc <- struct{}{}
+	close(n.recvc)
+	close(n.propc)
+	close(n.sendc)
+	close(n.changec)
+	close(n.stopc)
+	n.ticker.Stop()
+}
+
 func NewRaftNode(id uint64, storage Storage, peers []uint64, logger *zap.SugaredLogger) *RaftNode {
 
-	raft := NewRaft(id, storage, peers, logger)
-
-	propc := make(chan *pb.RaftMessage, 1000)
-	recvc := make(chan *pb.RaftMessage, 1000)
-	sendc := make(chan []*pb.RaftMessage, 1000)
-	ticker := time.NewTicker(time.Second)
-
 	node := &RaftNode{
-		raft:   raft,
-		Recvc:  recvc,
-		Propc:  propc,
-		Sendc:  sendc,
-		ticker: ticker,
-		logger: logger,
+		raft:    NewRaft(id, storage, peers, logger),
+		recvc:   make(chan *pb.RaftMessage),
+		propc:   make(chan *pb.RaftMessage),
+		sendc:   make(chan []*pb.RaftMessage),
+		changec: make(chan []*pb.MemberChange),
+		stopc:   make(chan struct{}),
+		ticker:  time.NewTicker(time.Second),
+		logger:  logger,
 	}
 
 	node.Start()

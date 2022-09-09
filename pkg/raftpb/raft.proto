@@ -6,6 +6,16 @@ service RaftInternal {
   rpc send(stream RaftMessage) returns (stream RaftMessage) {}
 }
 
+enum EntryType {
+  NORMAL = 0;
+  MEMBER_CHNAGE = 1;
+}
+
+enum MemberChangeType {
+  ADD_NODE = 0;
+  REMOVE_NODE = 1;
+}
+
 enum MessageType {
   VOTE = 0;
   VOTE_RES = 1;
@@ -18,9 +28,20 @@ enum MessageType {
 }
 
 message LogEntry {
-  uint64 Term = 1;
-  uint64 Index = 2;
-  bytes Data = 3;
+  EntryType type = 1;
+  uint64 Term = 2;
+  uint64 Index = 3;
+  bytes Data = 4;
+}
+
+message MemberChange {
+  MemberChangeType type = 1;
+  uint64 id = 2;
+  string address = 3;
+}
+
+message MemberChangeCollection {
+  repeated MemberChange changes = 1;
 }
 
 message RaftMessage {

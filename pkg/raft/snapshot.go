@@ -2,6 +2,7 @@ package raft
 
 import (
 	"encoding/binary"
+	pb "kvdb/pkg/raftpb"
 	"kvdb/pkg/rawdb"
 	"os"
 	"path"
@@ -16,6 +17,10 @@ type Snapshot struct {
 	keyScratch      [20]byte
 }
 
+func (ss *Snapshot) Close() {
+	ss.data.Close()
+}
+
 func (ss *Snapshot) Add(memdb *rawdb.MemDB) {
 	if memdb == nil {
 		return
@@ -23,11 +28,14 @@ func (ss *Snapshot) Add(memdb *rawdb.MemDB) {
 
 	k, v := memdb.GetMax()
 	index := binary.BigEndian.Uint64(k)
-	term, _ := binary.Uvarint(v)
+	term, _ := binary.Uvarint(v[1:])
 
 	it := memdb.GenerateIterator()
 	for it.Next() {
-		ss.data.Put(Decode(it.Value))
+		if pb.EntryType(uint8(it.Value[0])) == pb.EntryType_NORMAL {
+			_, n := binary.Uvarint(it.Value[1:])
+			ss.data.Put(Decode(it.Value[n+1:]))
+		}
 	}
 
 	n := binary.PutUvarint(ss.keyScratch[0:], index)

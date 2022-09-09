@@ -24,6 +24,10 @@ type Node struct {
 	logger     *zap.SugaredLogger
 }
 
+func (n *Node) Close() {
+	n.sr.Close()
+}
+
 func (n *Node) Load() error {
 
 	filter, err := n.sr.ReadFilter()

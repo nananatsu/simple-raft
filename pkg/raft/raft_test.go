@@ -1,6 +1,7 @@
 package raft
 
 import (
+	pb "kvdb/pkg/raftpb"
 	"kvdb/pkg/utils"
 	"log"
 	"strconv"
@@ -55,7 +56,7 @@ func TestNewRaftPropose(t *testing.T) {
 						for i := 0; i < 1000000; i++ {
 							key := utils.RandStringBytesRmndr(8)
 							value := utils.RandStringBytesRmndr(10)
-							node.Propose(Encode(key, value))
+							node.Propose([]*pb.LogEntry{{Data: Encode(key, value)}})
 							metricChan <- 1
 						}
 						break

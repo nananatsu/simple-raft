@@ -4,12 +4,12 @@ type ReplicaProgress struct {
 	MatchIndex uint64
 	NextIndex  uint64
 	pending    []uint64
-	active     bool
+	prevResp   bool
 }
 
 func (rp *ReplicaProgress) AppendEntry(lastIndex uint64) {
 	rp.pending = append(rp.pending, lastIndex)
-	if rp.active {
+	if rp.prevResp {
 		rp.NextIndex = lastIndex + 1
 	}
 }
@@ -28,24 +28,16 @@ func (rp *ReplicaProgress) AppendEntryResp(lastIndex uint64) {
 	}
 
 	if idx > -1 {
-		if !rp.active {
-			rp.active = true
+		if !rp.prevResp {
+			rp.prevResp = true
 			rp.NextIndex = lastIndex + 1
 		}
 		rp.pending = rp.pending[idx+1:]
 	}
 }
 
-func (rp *ReplicaProgress) CanSend() bool {
-	return rp.active || len(rp.pending) == 0
-}
-
-func (rp *ReplicaProgress) CheckPending() bool {
-	if !rp.CanSend() {
-		rp.pending = nil
-		return false
-	}
-	return true
+func (rp *ReplicaProgress) IsPause() bool {
+	return !rp.prevResp && len(rp.pending) > 0
 }
 
 func (rp *ReplicaProgress) Reset(lastLogIndex uint64) {
@@ -55,8 +47,8 @@ func (rp *ReplicaProgress) Reset(lastLogIndex uint64) {
 		rp.MatchIndex = lastLogIndex
 	}
 
-	if rp.active {
-		rp.active = false
+	if rp.prevResp {
+		rp.prevResp = false
 		rp.pending = nil
 	}
 }

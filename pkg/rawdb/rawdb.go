@@ -26,16 +26,21 @@ func NewConfig() *Config {
 }
 
 type DB struct {
-	mu sync.RWMutex
-
-	dir string
-
+	mu      sync.RWMutex
+	dir     string
 	conf    *Config
 	memdb   *MemDB
 	immdb   []*MemDB
 	lsmTree *lsm.Tree
+	logger  *zap.SugaredLogger
+}
 
-	logger *zap.SugaredLogger
+func (db *DB) Close() {
+	db.memdb.Close()
+	for _, md := range db.immdb {
+		md.Close()
+	}
+	db.lsmTree.Close()
 }
 
 func (db *DB) Put(key, value []byte) {

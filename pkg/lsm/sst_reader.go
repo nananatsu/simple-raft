@@ -173,6 +173,11 @@ func (r *SstReader) Destory() {
 	os.Remove(r.fd.Name())
 }
 
+func (r *SstReader) Close() {
+	r.reader.Reset(r.fd)
+	r.fd.Close()
+}
+
 func NewSstReader(fd *os.File, conf *Config) *SstReader {
 	return &SstReader{
 		fd:     fd,

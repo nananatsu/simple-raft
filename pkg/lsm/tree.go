@@ -40,7 +40,19 @@ type Tree struct {
 	tree    [][]*Node
 	seqNo   []int
 	compacc chan int
+	stopc   chan struct{}
 	logger  *zap.SugaredLogger
+}
+
+func (t *Tree) Close() {
+	t.stopc <- struct{}{}
+	close(t.stopc)
+	close(t.compacc)
+	for _, level := range t.tree {
+		for _, n := range level {
+			n.Close()
+		}
+	}
 }
 
 func (t *Tree) FlushRecord(it *skiplist.SkipListIter, level, seqNo int) error {
@@ -284,7 +296,6 @@ func (t *Tree) CheckCompaction() {
 
 	level0 := make(chan struct{}, 100)
 	levelN := make(chan int, 100)
-	stop := make(chan struct{})
 
 	go func() {
 		for {
@@ -293,7 +304,8 @@ func (t *Tree) CheckCompaction() {
 				if len(t.tree[0]) > 4 {
 					t.Compaction(0)
 				}
-			case <-stop:
+			case <-t.stopc:
+				close(level0)
 				return
 			}
 
@@ -320,7 +332,8 @@ func (t *Tree) CheckCompaction() {
 						break
 					}
 				}
-			case <-stop:
+			case <-t.stopc:
+				close(levelN)
 				return
 			}
 		}
@@ -328,11 +341,15 @@ func (t *Tree) CheckCompaction() {
 
 	go func() {
 		for {
-			lv := <-t.compacc
-			if lv == 0 {
-				level0 <- struct{}{}
-			} else {
-				levelN <- lv
+			select {
+			case <-t.stopc:
+				return
+			case lv := <-t.compacc:
+				if lv == 0 {
+					level0 <- struct{}{}
+				} else {
+					levelN <- lv
+				}
 			}
 		}
 	}()
@@ -423,6 +440,7 @@ func NewTree(dir string, conf *Config, logger *zap.SugaredLogger) *Tree {
 		tree:    levelTree,
 		seqNo:   seqNos,
 		compacc: compactionChan,
+		stopc:   make(chan struct{}),
 		logger:  logger,
 	}
 

@@ -21,7 +21,6 @@ func (l *RaftLog) GetEntries(index uint64) []*pb.LogEntry {
 	var entries []*pb.LogEntry
 
 	if index <= l.lastAppliedIndex {
-
 		endIndex := index + maxAppendEntriesSize
 		if endIndex >= l.lastAppliedIndex {
 			endIndex = l.lastAppliedIndex + 1

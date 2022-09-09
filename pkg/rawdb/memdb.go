@@ -79,6 +79,15 @@ func (db *MemDB) Sync() {
 	}()
 }
 
+func (db *MemDB) Close() {
+	db.stop <- struct{}{}
+	if db.walw != nil {
+		db.walw.Close()
+	}
+	db.ticker.Stop()
+	close(db.stop)
+}
+
 func (db *MemDB) Finish() {
 	db.stop <- struct{}{}
 	if db.walw != nil {
