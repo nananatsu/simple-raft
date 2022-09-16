@@ -18,6 +18,7 @@ type RaftNode struct {
 	propc   chan *pb.RaftMessage
 	sendc   chan []*pb.RaftMessage
 	changec chan []*pb.MemberChange
+	notifyc chan []*pb.MemberChange
 	stopc   chan struct{}
 	ticker  *time.Ticker
 	logger  *zap.SugaredLogger
@@ -34,6 +35,9 @@ func (n *RaftNode) Start() {
 				sendc = n.sendc
 			} else {
 				sendc = nil
+				if n.raft.raftlog.storage.HasNotify() {
+					n.notifyc <- n.raft.raftlog.storage.Notify()
+				}
 			}
 
 			if len(n.recvc) > 0 || len(sendc) > 0 {
@@ -85,6 +89,10 @@ func (n *RaftNode) Poll() chan []*pb.RaftMessage {
 	return n.sendc
 }
 
+func (n *RaftNode) Notify() chan []*pb.MemberChange {
+	return n.notifyc
+}
+
 func (n *RaftNode) Ready() bool {
 	if n.raft.cluster.pendingChangeIndex <= n.raft.raftlog.lastAppliedIndex {
 		return n.raft.state == LEADER_STATE || (n.raft.state == FOLLOWER_STATE && n.raft.leader != 0)
@@ -94,6 +102,10 @@ func (n *RaftNode) Ready() bool {
 
 func (n *RaftNode) IsLeader() bool {
 	return n.raft.state == LEADER_STATE
+}
+
+func (n *RaftNode) GetLeader() uint64 {
+	return n.raft.leader
 }
 
 func (n *RaftNode) Status() *RaftStatus {
@@ -109,8 +121,10 @@ func (n *RaftNode) Close() {
 	close(n.propc)
 	close(n.sendc)
 	close(n.changec)
+	close(n.notifyc)
 	close(n.stopc)
 	n.ticker.Stop()
+	n.raft.raftlog.storage.Close()
 }
 
 func NewRaftNode(id uint64, storage Storage, peers []uint64, logger *zap.SugaredLogger) *RaftNode {
@@ -121,6 +135,7 @@ func NewRaftNode(id uint64, storage Storage, peers []uint64, logger *zap.Sugared
 		propc:   make(chan *pb.RaftMessage),
 		sendc:   make(chan []*pb.RaftMessage),
 		changec: make(chan []*pb.MemberChange),
+		notifyc: make(chan []*pb.MemberChange),
 		stopc:   make(chan struct{}),
 		ticker:  time.NewTicker(time.Second),
 		logger:  logger,

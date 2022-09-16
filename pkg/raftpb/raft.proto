@@ -2,8 +2,8 @@ syntax = "proto3";
 package raftpb;
 option go_package = "kvdb/pkg/raftpb";
 
-service RaftInternal {
-  rpc send(stream RaftMessage) returns (stream RaftMessage) {}
+service Raft {
+  rpc consensus(stream RaftMessage) returns (stream RaftMessage) {}
 }
 
 enum EntryType {
@@ -29,9 +29,9 @@ enum MessageType {
 
 message LogEntry {
   EntryType type = 1;
-  uint64 Term = 2;
-  uint64 Index = 3;
-  bytes Data = 4;
+  uint64 term = 2;
+  uint64 index = 3;
+  bytes data = 4;
 }
 
 message MemberChange {
@@ -45,13 +45,13 @@ message MemberChangeCollection {
 }
 
 message RaftMessage {
-  MessageType MsgType = 1;
-  uint64 Term = 2;
-  uint64 From = 3;
-  uint64 To = 4;
-  uint64 LastLogIndex = 5;
-  uint64 LastLogTerm = 6;
-  uint64 LastCommit = 7;
-  repeated LogEntry Entry = 8;
-  bool Success = 9;
+  MessageType msgType = 1;
+  uint64 term = 2;
+  uint64 from = 3;
+  uint64 to = 4;
+  uint64 lastLogIndex = 5;
+  uint64 lastLogTerm = 6;
+  uint64 lastCommit = 7;
+  repeated LogEntry entry = 8;
+  bool success = 9;
 }

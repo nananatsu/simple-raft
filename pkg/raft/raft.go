@@ -54,6 +54,7 @@ func (r *Raft) SwitchCandidate() {
 	})
 
 	r.BroadcastRequestVote()
+	r.electtionTick = 0
 	r.logger.Debugf("成为 Candidate, 任期: %d", r.currentTerm)
 }
 
@@ -69,6 +70,7 @@ func (r *Raft) SwitchFollower(leaderId, term uint64) {
 	r.randomElectionTimeout = r.electionTimeout + rand.Intn(r.electionTimeout)
 	r.Tick = r.TickElection
 	r.hanbleMessage = r.HandleFollowerMessage
+	r.electtionTick = 0
 }
 
 func (r *Raft) SwitchLeader() {
@@ -81,6 +83,8 @@ func (r *Raft) SwitchLeader() {
 	r.Tick = r.TickHeartbeat
 	r.hanbleMessage = r.HandleLeaderMessage
 	r.BroadcastHeartbeat()
+	r.electtionTick = 0
+	r.hearbeatTick = 0
 }
 
 func (r *Raft) TickHeartbeat() {
@@ -124,9 +128,9 @@ func (r *Raft) HandleMessage(msg *pb.RaftMessage) {
 		return
 	}
 
-	if msg.MsgType == pb.MessageType_APPEND_ENTRY || msg.MsgType == pb.MessageType_APPEND_ENTRY_RESP {
-		r.logger.Debugf("收到 %s ", msg.String())
-	}
+	// if msg.MsgType == pb.MessageType_APPEND_ENTRY || msg.MsgType == pb.MessageType_APPEND_ENTRY_RESP {
+	// 	r.logger.Debugf("收到 %s ", msg.String())
+	// }
 
 	r.hanbleMessage(msg)
 }
@@ -198,8 +202,8 @@ func (r *Raft) HandleLeaderMessage(msg *pb.RaftMessage) {
 	switch msg.MsgType {
 	case pb.MessageType_PROPOSE:
 		r.AppendEntry(msg.Entry)
-	case pb.MessageType_VOTE:
-		r.ReciveRequestVote(msg.Term, msg.From, msg.LastLogTerm, msg.LastLogIndex)
+	// case pb.MessageType_VOTE:
+	// r.ReciveRequestVote(msg.Term, msg.From, msg.LastLogTerm, msg.LastLogIndex)
 	case pb.MessageType_VOTE_RES:
 	case pb.MessageType_HEARTBEAT_RESP:
 	case pb.MessageType_APPEND_ENTRY_RESP:
@@ -256,6 +260,7 @@ func (r *Raft) BroadcastHeartbeat() {
 		}
 		lastLogIndex := p.NextIndex - 1
 		lastLogTerm := r.raftlog.GetTerm(lastLogIndex)
+
 		r.SendMessage(pb.MessageType_HEARTBEAT, id, lastLogIndex, lastLogTerm, r.raftlog.commitIndex, nil, false)
 	})
 }
@@ -279,7 +284,7 @@ func (r *Raft) BroadcastRequestVote() {
 func (r *Raft) SendAppendEntries(to uint64) {
 
 	if r.cluster.IsPause(to) {
-		r.logger.Debugf("节点 %s 停止发送消息, 上次发送状态: %t ,未确认消息 %d ", strconv.FormatUint(to, 16), r.cluster.progress[to].prevResp, len(r.cluster.progress[to].pending))
+		// r.logger.Debugf("节点 %s 停止发送消息, 上次发送状态: %t ,未确认消息 %d ", strconv.FormatUint(to, 16), r.cluster.progress[to].prevResp, len(r.cluster.progress[to].pending))
 		return
 	}
 
@@ -291,15 +296,13 @@ func (r *Raft) SendAppendEntries(to uint64) {
 	entries := r.raftlog.GetEntries(nextIndex)
 	size := len(entries)
 	if size == 0 {
-		r.logger.Debugf("节点 %s 下次发送: %d, 当前已同步到最新日志", strconv.FormatUint(to, 16), nextIndex)
+		// r.logger.Debugf("节点 %s 下次发送: %d, 当前已同步到最新日志", strconv.FormatUint(to, 16), nextIndex)
+		r.SendMessage(pb.MessageType_APPEND_ENTRY, to, lastLogIndex, lastLogTerm, r.raftlog.commitIndex, entries, false)
 		return
 	}
-
-	r.logger.Debugf("发送日志到 %s, 范围 %d ~ %d ", strconv.FormatUint(to, 16), entries[0].Index, entries[size-1].Index)
-
+	// r.logger.Debugf("发送日志到 %s, 范围 %d ~ %d ", strconv.FormatUint(to, 16), entries[0].Index, entries[size-1].Index)
 	r.cluster.AppendEntry(to, entries[size-1].Index)
 	r.SendMessage(pb.MessageType_APPEND_ENTRY, to, lastLogIndex, lastLogTerm, r.raftlog.commitIndex, entries, false)
-
 }
 
 func (r *Raft) SendMessage(msgType pb.MessageType, to, lastLogIndex, lastLogTerm, LastCommit uint64, entry []*pb.LogEntry, success bool) {
@@ -325,10 +328,10 @@ func (r *Raft) ReciveVoteResult(from, term, lastLogIndex, lastLogTerm uint64, su
 
 	voteRes := r.cluster.CheckVoteResult()
 	if voteRes == VoteWon {
-		r.logger.Debugf("节点 %s 发起投票, 赢得选取", strconv.FormatUint(from, 16))
+		r.logger.Debugf("节点 %s 发起投票, 赢得选取", strconv.FormatUint(r.id, 16))
 		r.SwitchLeader()
 	} else if voteRes == VoteLost {
-		r.logger.Debugf("节点 %s 发起投票, 输掉选取", strconv.FormatUint(from, 16))
+		r.logger.Debugf("节点 %s 发起投票, 输掉选取", strconv.FormatUint(r.id, 16))
 		r.voteFor = 0
 		r.cluster.ResetVoteResult()
 	}
@@ -336,7 +339,6 @@ func (r *Raft) ReciveVoteResult(from, term, lastLogIndex, lastLogTerm uint64, su
 
 func (r *Raft) ReciveAppendEntriesResult(from, term, lastLogIndex uint64, success bool) {
 	if success {
-
 		prevResp := r.cluster.IsPause(from)
 		r.cluster.AppendEntryResp(from, lastLogIndex)
 		if lastLogIndex > r.raftlog.commitIndex {

@@ -62,7 +62,6 @@ func (c *Cluster) ChangeMember(changes []*pb.MemberChange) error {
 		for k := range c.progress {
 			_, exsit := c.incoming[k]
 			if !exsit {
-				c.logger.Debugf("清理节点 %s", strconv.FormatUint(k, 16))
 				delete(c.progress, k)
 			}
 		}
@@ -91,28 +90,56 @@ func (c *Cluster) ChangeMember(changes []*pb.MemberChange) error {
 }
 
 func (c *Cluster) IsPause(id uint64) bool {
-	return c.progress[id].IsPause()
+	p := c.progress[id]
+	if p != nil {
+		return p.IsPause()
+	}
+	return true
 }
 
 func (c *Cluster) UpdateLogIndex(id uint64, lastIndex uint64) {
-	c.progress[id].NextIndex = lastIndex
-	c.progress[id].MatchIndex = lastIndex + 1
+	p := c.progress[id]
+	if p != nil {
+		p.NextIndex = lastIndex
+		p.MatchIndex = lastIndex + 1
+	}
 }
 
 func (c *Cluster) ResetLogIndex(id uint64, lastIndex uint64) {
-	c.progress[id].Reset(lastIndex)
+	p := c.progress[id]
+	if p != nil {
+		p.Reset(lastIndex)
+	}
 }
 
 func (c *Cluster) AppendEntry(id uint64, lastIndex uint64) {
-	c.progress[id].AppendEntry(lastIndex)
+	p := c.progress[id]
+	if p != nil {
+		p.AppendEntry(lastIndex)
+	}
 }
 
 func (c *Cluster) AppendEntryResp(id uint64, lastIndex uint64) {
-	c.progress[id].AppendEntryResp(lastIndex)
+	p := c.progress[id]
+	if p != nil {
+		p.AppendEntryResp(lastIndex)
+	}
 }
 
 func (c *Cluster) GetNextIndex(id uint64) uint64 {
-	return c.progress[id].NextIndex
+	p := c.progress[id]
+	if p != nil {
+		return p.NextIndex
+	}
+	return 0
+}
+
+func (c *Cluster) GetMacthIndex(id uint64) uint64 {
+	p := c.progress[id]
+	if p != nil {
+		return p.MatchIndex
+	}
+	return 0
 }
 
 func (c *Cluster) CheckCommit(index uint64) bool {

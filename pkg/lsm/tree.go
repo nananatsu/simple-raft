@@ -9,6 +9,7 @@ import (
 	"path"
 	"strconv"
 	"sync"
+	"time"
 
 	"go.uber.org/zap"
 )
@@ -45,12 +46,18 @@ type Tree struct {
 }
 
 func (t *Tree) Close() {
-	t.stopc <- struct{}{}
-	close(t.stopc)
-	close(t.compacc)
-	for _, level := range t.tree {
-		for _, n := range level {
-			n.Close()
+	for {
+		select {
+		case t.stopc <- struct{}{}:
+		case <-time.After(time.Second):
+			close(t.stopc)
+			close(t.compacc)
+			for _, level := range t.tree {
+				for _, n := range level {
+					n.Close()
+				}
+			}
+			return
 		}
 	}
 }

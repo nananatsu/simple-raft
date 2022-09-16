@@ -24,7 +24,8 @@ type Storage interface {
 	GetEntries(startIndex, endIndex uint64) []*pb.LogEntry
 	GetTerm(index uint64) uint64
 	GetLast() (uint64, uint64)
-	Notify() chan []*pb.MemberChange
+	Notify() []*pb.MemberChange
+	HasNotify() bool
 	Close()
 }
 
@@ -33,12 +34,18 @@ type RaftStorage struct {
 	db         *rawdb.MemDB
 	snap       *Snapshot
 	keyScratch [20]byte
-	changec    chan []*pb.MemberChange
+	notify     [][]*pb.MemberChange
 	logger     *zap.SugaredLogger
 }
 
-func (rs *RaftStorage) Notify() chan []*pb.MemberChange {
-	return rs.changec
+func (rs *RaftStorage) HasNotify() bool {
+	return len(rs.notify) > 0
+}
+
+func (rs *RaftStorage) Notify() []*pb.MemberChange {
+	changes := rs.notify[0]
+	rs.notify = rs.notify[1:]
+	return changes
 }
 
 func (rs *RaftStorage) Append(entries []*pb.LogEntry) {
@@ -48,9 +55,11 @@ func (rs *RaftStorage) Append(entries []*pb.LogEntry) {
 	for _, entry := range entries {
 		if entry.Type == pb.EntryType_MEMBER_CHNAGE {
 			var changeCol pb.MemberChangeCollection
-			proto.Unmarshal(entry.Data, &changeCol)
-			rs.changec <- changeCol.Changes
-			// continue
+			err := proto.Unmarshal(entry.Data, &changeCol)
+			if err != nil {
+				rs.logger.Warnf("解析成员变更日志失败: %v", err)
+			}
+			rs.notify = append(rs.notify, changeCol.Changes)
 		}
 		binary.BigEndian.PutUint64(rs.keyScratch[0:], entry.Index)
 		rs.keyScratch[8] = uint8(entry.Type)
@@ -119,7 +128,6 @@ func (rs *RaftStorage) GetEntries(startIndex, endIndex uint64) []*pb.LogEntry {
 }
 
 func (rs *RaftStorage) Close() {
-	close(rs.changec)
 	rs.db.Close()
 	rs.snap.Close()
 }
@@ -171,10 +179,10 @@ func NewRaftStorage(dir string, logger *zap.SugaredLogger) *RaftStorage {
 	}
 
 	s := &RaftStorage{
-		db:      db,
-		snap:    NewSnapshot(dir, logger),
-		changec: make(chan []*pb.MemberChange),
-		logger:  logger,
+		db:     db,
+		snap:   NewSnapshot(dir, logger),
+		notify: make([][]*pb.MemberChange, 0),
+		logger: logger,
 	}
 
 	for _, md := range memdbs {

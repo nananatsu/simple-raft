@@ -1,0 +1,37 @@
+syntax = "proto3";
+package clientpb;
+option go_package = "kvdb/pkg/clientpb";
+
+enum ConfigType {
+  ADD_NODE = 0;
+  REMOVE_NODE = 1;
+}
+
+message Request {
+  uint64 clientId = 1;
+  uint64 seq = 2;
+}
+
+message PutRequest {
+  Request req = 1;
+  string key = 2;
+  string value = 3;
+}
+
+message ConfigRequest {
+  Request req = 1;
+  ConfigType type = 2;
+  map<string, string> servers = 3;
+}
+
+message Response {
+   bool success = 1; 
+   string leader = 2;
+}
+
+service Kvdb {
+  rpc leader(Request) returns (Response) {}
+  rpc ready(Request) returns (Response) {}
+  rpc put(PutRequest) returns (Response) {}
+  rpc change(ConfigRequest) returns (Response) {}
+}

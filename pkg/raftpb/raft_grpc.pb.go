@@ -18,45 +18,45 @@ import (
 // Requires gRPC-Go v1.32.0 or later.
 const _ = grpc.SupportPackageIsVersion7
 
-// RaftInternalClient is the client API for RaftInternal service.
+// RaftClient is the client API for Raft service.
 //
 // For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
-type RaftInternalClient interface {
-	Send(ctx context.Context, opts ...grpc.CallOption) (RaftInternal_SendClient, error)
+type RaftClient interface {
+	Consensus(ctx context.Context, opts ...grpc.CallOption) (Raft_ConsensusClient, error)
 }
 
-type raftInternalClient struct {
+type raftClient struct {
 	cc grpc.ClientConnInterface
 }
 
-func NewRaftInternalClient(cc grpc.ClientConnInterface) RaftInternalClient {
-	return &raftInternalClient{cc}
+func NewRaftClient(cc grpc.ClientConnInterface) RaftClient {
+	return &raftClient{cc}
 }
 
-func (c *raftInternalClient) Send(ctx context.Context, opts ...grpc.CallOption) (RaftInternal_SendClient, error) {
-	stream, err := c.cc.NewStream(ctx, &RaftInternal_ServiceDesc.Streams[0], "/raftpb.RaftInternal/send", opts...)
+func (c *raftClient) Consensus(ctx context.Context, opts ...grpc.CallOption) (Raft_ConsensusClient, error) {
+	stream, err := c.cc.NewStream(ctx, &Raft_ServiceDesc.Streams[0], "/raftpb.Raft/consensus", opts...)
 	if err != nil {
 		return nil, err
 	}
-	x := &raftInternalSendClient{stream}
+	x := &raftConsensusClient{stream}
 	return x, nil
 }
 
-type RaftInternal_SendClient interface {
+type Raft_ConsensusClient interface {
 	Send(*RaftMessage) error
 	Recv() (*RaftMessage, error)
 	grpc.ClientStream
 }
 
-type raftInternalSendClient struct {
+type raftConsensusClient struct {
 	grpc.ClientStream
 }
 
-func (x *raftInternalSendClient) Send(m *RaftMessage) error {
+func (x *raftConsensusClient) Send(m *RaftMessage) error {
 	return x.ClientStream.SendMsg(m)
 }
 
-func (x *raftInternalSendClient) Recv() (*RaftMessage, error) {
+func (x *raftConsensusClient) Recv() (*RaftMessage, error) {
 	m := new(RaftMessage)
 	if err := x.ClientStream.RecvMsg(m); err != nil {
 		return nil, err
@@ -64,53 +64,53 @@ func (x *raftInternalSendClient) Recv() (*RaftMessage, error) {
 	return m, nil
 }
 
-// RaftInternalServer is the server API for RaftInternal service.
-// All implementations must embed UnimplementedRaftInternalServer
+// RaftServer is the server API for Raft service.
+// All implementations must embed UnimplementedRaftServer
 // for forward compatibility
-type RaftInternalServer interface {
-	Send(RaftInternal_SendServer) error
-	mustEmbedUnimplementedRaftInternalServer()
+type RaftServer interface {
+	Consensus(Raft_ConsensusServer) error
+	mustEmbedUnimplementedRaftServer()
 }
 
-// UnimplementedRaftInternalServer must be embedded to have forward compatible implementations.
-type UnimplementedRaftInternalServer struct {
+// UnimplementedRaftServer must be embedded to have forward compatible implementations.
+type UnimplementedRaftServer struct {
 }
 
-func (UnimplementedRaftInternalServer) Send(RaftInternal_SendServer) error {
-	return status.Errorf(codes.Unimplemented, "method Send not implemented")
+func (UnimplementedRaftServer) Consensus(Raft_ConsensusServer) error {
+	return status.Errorf(codes.Unimplemented, "method Consensus not implemented")
 }
-func (UnimplementedRaftInternalServer) mustEmbedUnimplementedRaftInternalServer() {}
+func (UnimplementedRaftServer) mustEmbedUnimplementedRaftServer() {}
 
-// UnsafeRaftInternalServer may be embedded to opt out of forward compatibility for this service.
-// Use of this interface is not recommended, as added methods to RaftInternalServer will
+// UnsafeRaftServer may be embedded to opt out of forward compatibility for this service.
+// Use of this interface is not recommended, as added methods to RaftServer will
 // result in compilation errors.
-type UnsafeRaftInternalServer interface {
-	mustEmbedUnimplementedRaftInternalServer()
+type UnsafeRaftServer interface {
+	mustEmbedUnimplementedRaftServer()
 }
 
-func RegisterRaftInternalServer(s grpc.ServiceRegistrar, srv RaftInternalServer) {
-	s.RegisterService(&RaftInternal_ServiceDesc, srv)
+func RegisterRaftServer(s grpc.ServiceRegistrar, srv RaftServer) {
+	s.RegisterService(&Raft_ServiceDesc, srv)
 }
 
-func _RaftInternal_Send_Handler(srv interface{}, stream grpc.ServerStream) error {
-	return srv.(RaftInternalServer).Send(&raftInternalSendServer{stream})
+func _Raft_Consensus_Handler(srv interface{}, stream grpc.ServerStream) error {
+	return srv.(RaftServer).Consensus(&raftConsensusServer{stream})
 }
 
-type RaftInternal_SendServer interface {
+type Raft_ConsensusServer interface {
 	Send(*RaftMessage) error
 	Recv() (*RaftMessage, error)
 	grpc.ServerStream
 }
 
-type raftInternalSendServer struct {
+type raftConsensusServer struct {
 	grpc.ServerStream
 }
 
-func (x *raftInternalSendServer) Send(m *RaftMessage) error {
+func (x *raftConsensusServer) Send(m *RaftMessage) error {
 	return x.ServerStream.SendMsg(m)
 }
 
-func (x *raftInternalSendServer) Recv() (*RaftMessage, error) {
+func (x *raftConsensusServer) Recv() (*RaftMessage, error) {
 	m := new(RaftMessage)
 	if err := x.ServerStream.RecvMsg(m); err != nil {
 		return nil, err
@@ -118,17 +118,17 @@ func (x *raftInternalSendServer) Recv() (*RaftMessage, error) {
 	return m, nil
 }
 
-// RaftInternal_ServiceDesc is the grpc.ServiceDesc for RaftInternal service.
+// Raft_ServiceDesc is the grpc.ServiceDesc for Raft service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
-var RaftInternal_ServiceDesc = grpc.ServiceDesc{
-	ServiceName: "raftpb.RaftInternal",
-	HandlerType: (*RaftInternalServer)(nil),
+var Raft_ServiceDesc = grpc.ServiceDesc{
+	ServiceName: "raftpb.Raft",
+	HandlerType: (*RaftServer)(nil),
 	Methods:     []grpc.MethodDesc{},
 	Streams: []grpc.StreamDesc{
 		{
-			StreamName:    "send",
-			Handler:       _RaftInternal_Send_Handler,
+			StreamName:    "consensus",
+			Handler:       _Raft_Consensus_Handler,
 			ServerStreams: true,
 			ClientStreams: true,
 		},
