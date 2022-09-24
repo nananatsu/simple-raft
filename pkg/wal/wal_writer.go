@@ -3,8 +3,11 @@ package wal
 import (
 	"bytes"
 	"encoding/binary"
+	"fmt"
 	"kvdb/pkg/utils"
 	"os"
+	"path"
+	"strconv"
 	"sync"
 
 	"go.uber.org/zap"
@@ -19,6 +22,8 @@ const (
 
 type WalWriter struct {
 	mu            sync.RWMutex
+	dir           string
+	seqNo         int
 	fd            *os.File
 	header        [20]byte
 	buf           *bytes.Buffer
@@ -116,11 +121,29 @@ func (w *WalWriter) Finish() {
 	os.Remove(file)
 }
 
-func NewWalWriter(fd *os.File, logger *zap.SugaredLogger) *WalWriter {
+func (w *WalWriter) Next() (*WalWriter, error) {
+	return NewWalWriter(w.dir, w.seqNo+1, w.logger)
+}
+
+func NewWalWriter(dir string, seqNo int, logger *zap.SugaredLogger) (*WalWriter, error) {
+
+	walFile := path.Join(dir, strconv.Itoa(seqNo)+".wal")
+
+	fd, err := os.OpenFile(walFile, os.O_APPEND|os.O_WRONLY|os.O_CREATE, 0644)
+	if err != nil {
+		return nil, fmt.Errorf("打开 %d.wal 失败: %v", seqNo, err)
+	}
+	// logger.Debugf("打开 %d.wal成功", seqNo)
+
 	w := &WalWriter{
+		dir:    dir,
+		seqNo:  seqNo,
 		fd:     fd,
 		buf:    bytes.NewBuffer(make([]byte, 7)),
 		logger: logger,
 	}
-	return w
+
+	w.PaddingFile()
+
+	return w, nil
 }

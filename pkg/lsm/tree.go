@@ -3,10 +3,13 @@ package lsm
 import (
 	"bytes"
 	"fmt"
+	"io/fs"
 	"kvdb/pkg/skiplist"
+	"kvdb/pkg/utils"
 	"math"
 	"os"
 	"path"
+	"regexp"
 	"strconv"
 	"sync"
 	"time"
@@ -14,7 +17,11 @@ import (
 	"go.uber.org/zap"
 )
 
+var SstFileNameReg = regexp.MustCompile(`^(?P<level>\d+)_(?P<seqNo>\d+)_(?P<extra>.*)\.sst$`)
+
 type Config struct {
+	Dir                 string
+	Logger              *zap.SugaredLogger
 	MaxLevel            int
 	SstSize             int
 	SstDataBlockSize    int
@@ -23,8 +30,10 @@ type Config struct {
 	SstRestartInterval  int
 }
 
-func NewConfig() *Config {
+func NewConfig(dir string, logger *zap.SugaredLogger) *Config {
 	return &Config{
+		Dir:                 dir,
+		Logger:              logger,
 		MaxLevel:            7,
 		SstSize:             4096 * 1024,
 		SstDataBlockSize:    16 * 1024,
@@ -36,7 +45,6 @@ func NewConfig() *Config {
 
 type Tree struct {
 	mu      sync.RWMutex
-	dir     string
 	conf    *Config
 	tree    [][]*Node
 	seqNo   []int
@@ -62,48 +70,75 @@ func (t *Tree) Close() {
 	}
 }
 
-func (t *Tree) FlushRecord(it *skiplist.SkipListIter, level, seqNo int) error {
-
-	fd, err := OpenFile(t.dir, os.O_WRONLY|os.O_CREATE, level, seqNo)
-	if err != nil {
-		t.logger.Errorf("创建 %d.%d.sst 失败: %v", level, seqNo, err)
-		return err
+func (t *Tree) Merge(level int, extra string, filePath string) error {
+	if level > 0 && level < t.conf.MaxLevel {
+		for i := 0; i < level; i++ {
+			for len(t.tree[i]) > 0 {
+				err := t.compaction(i)
+				if err != nil {
+					return err
+				}
+			}
+		}
 	}
+	newFile := formatName(level, t.NextSeqNo(level), extra)
 
-	w := NewSstWriter(fd, t.conf, t.logger)
-
-	count := 0
-	for it.Next() {
-		w.Append(it.Key, it.Value)
-		count++
-	}
-
-	t.logger.Infof("写入: %d.%d.sst,数据数: %d ", level, seqNo, count)
-
-	size, filter, index := w.Finish()
-	t.AddNode(level, seqNo, size, filter, index)
+	os.Rename(filePath, path.Join(t.conf.Dir, newFile))
+	t.LoadNode(newFile)
 
 	return nil
 }
 
-func (t *Tree) Insert(ln *Node) {
+// 将数据写入lsm树第一层
+func (t *Tree) FlushRecord(sl *skiplist.SkipListIter, extra string) error {
+	level := 0
+	seqNo := t.NextSeqNo(level)
+
+	file := formatName(level, seqNo, extra)
+	w, err := NewSstWriter(file, t.conf, t.logger)
+	if err != nil {
+		return fmt.Errorf("创建sst writer失败: %v", err)
+	}
+	defer w.Close()
+
+	count := 0
+	for sl.Next() {
+		w.Append(sl.Key, sl.Value)
+		count++
+	}
+
+	t.logger.Infof("写入: %s ,数据数: %d ", file, count)
+	size, filter, index := w.Finish()
+
+	node, err := NewNode(level, seqNo, extra, file, size, filter, index, t.conf)
+	if err != nil {
+		return fmt.Errorf("创建lsm节点失败: %v", err)
+	}
+	t.insertNode(node)
+	t.compacc <- level
+
+	return nil
+}
+
+// 将lsm节点放入树
+func (t *Tree) insertNode(node *Node) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
-	level := ln.Level
+	level := node.Level
 	length := len(t.tree[level]) - 1
 	idx := length
 	for ; idx >= 0; idx-- {
-		if ln.SeqNo > t.tree[level][idx].SeqNo {
+		if node.SeqNo > t.tree[level][idx].SeqNo {
 			break
-		} else if ln.SeqNo == t.tree[level][idx].SeqNo {
-			t.tree[level][idx] = ln
+		} else if node.SeqNo == t.tree[level][idx].SeqNo {
+			t.tree[level][idx] = node
 			return
 		}
 	}
 
 	if idx == length {
-		t.tree[level] = append(t.tree[level], ln)
+		t.tree[level] = append(t.tree[level], node)
 	} else {
 		var newLevel []*Node
 		if idx == -1 {
@@ -112,77 +147,73 @@ func (t *Tree) Insert(ln *Node) {
 		} else {
 			newLevel = append(t.tree[level][:idx+1], t.tree[level][idx:]...)
 		}
-		newLevel[idx+1] = ln
+		newLevel[idx+1] = node
 		t.tree[level] = newLevel
 	}
 }
 
-func (t *Tree) AddNode(level, seqNo int, size int64, filter map[uint64][]byte, index []*Index) {
+// 加载节点到lsm树
+func (t *Tree) LoadNode(file string) error {
 
-	fd, err := OpenFile(t.dir, os.O_RDONLY, level, seqNo)
-	if err != nil {
-		t.logger.Errorf("无法加入节点，打开 %d,%d.sst文件失败:%v", level, seqNo, err)
-		return
+	var level int
+	var seqNo int
+	var extra string
+
+	match := SstFileNameReg.FindStringSubmatch(file)
+	if len(match) == 0 {
+		return fmt.Errorf("%s 非sst", file)
 	}
 
-	var ln *Node
+	for i, name := range SstFileNameReg.SubexpNames() {
+		if i != 0 && name != "" {
+			switch name {
+			case "level":
+				level, _ = strconv.Atoi(match[i])
+				break
+			case "seqNo":
+				seqNo, _ = strconv.Atoi(match[i])
+				break
+			case "extra":
+				extra = match[i]
+				break
+			}
+		}
+	}
 
-	if filter == nil {
-		ln = &Node{
-			sr:       NewSstReader(fd, t.conf),
-			Level:    level,
-			SeqNo:    seqNo,
-			curBlock: 1,
-			logger:   t.logger,
+	if level < t.conf.MaxLevel {
+		node, err := RestoreNode(level, seqNo, extra, file, t.conf)
+		if err != nil {
+			return fmt.Errorf("还原lsm节点失败: %v", err)
 		}
 
 		if t.seqNo[level] < seqNo {
 			t.seqNo[level] = seqNo
 		}
-
-		if ln.Load() != nil {
-			return
-		}
-		t.Insert(ln)
+		t.insertNode(node)
 	} else {
-		ln = &Node{
-			sr:       NewSstReader(fd, t.conf),
-			Level:    level,
-			SeqNo:    seqNo,
-			curBlock: 1,
-			FileSize: size,
-			filter:   filter,
-			index:    index,
-			startKey: index[0].Key,
-			endKey:   index[len(index)-1].Key,
-			logger:   t.logger,
-		}
-		t.Insert(ln)
-		t.compacc <- level
+		return fmt.Errorf("%s 层数大于最大层数", file)
 	}
+	return nil
 }
 
-func (t *Tree) RemoveNode(nodes []*Node) {
+// 移除节点（合并后移除旧节点）
+func (t *Tree) removeNode(nodes []*Node) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
-	lv := nodes[0].Level
-
 	for _, node := range nodes {
-		node.Destory()
-	}
-
-	for i := lv; i <= lv+1; i++ {
-		newLevel := make([]*Node, 0)
-		for _, node := range t.tree[i] {
-			if node.Level != -1 {
-				newLevel = append(newLevel, node)
+		t.logger.Debugf("移除: %d_%d_%s.sst ", node.Level, node.SeqNo, node.Extra)
+		for i, tn := range t.tree[node.Level] {
+			if tn.SeqNo == node.SeqNo {
+				t.tree[node.Level] = append(t.tree[node.Level][:i], t.tree[node.Level][i+1:]...)
+				break
 			}
 		}
-		t.tree[i] = newLevel
+		node.destory()
 	}
 }
 
+// 取得指定层下一文件序号
 func (t *Tree) NextSeqNo(level int) int {
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -192,24 +223,27 @@ func (t *Tree) NextSeqNo(level int) int {
 	return t.seqNo[level]
 }
 
-func (t *Tree) Compaction(level int) error {
+// 合并节点
+func (t *Tree) compaction(level int) error {
 
 	nodes := t.PickupCompactionNode(level)
 
-	if len(nodes) == 0 {
+	lenNodes := len(nodes)
+	if lenNodes == 0 {
 		return nil
 	}
 
 	nextLevel := level + 1
 	seqNo := t.NextSeqNo(nextLevel)
+	extra := nodes[lenNodes-1].Extra
 
-	fd, err := OpenFile(t.dir, os.O_WRONLY|os.O_CREATE, nextLevel, seqNo)
+	file := formatName(nextLevel, seqNo, extra)
+	writer, err := NewSstWriter(file, t.conf, t.logger)
+
 	if err != nil {
-		t.logger.Errorf("无法合并lsm日志,打开/创建 %d,%d.sst文件失败:%v", nextLevel, seqNo, err)
+		t.logger.Errorf("%s 创建writer失败,无法合并lsm日志:%v", file, err)
 		return err
 	}
-
-	writer := NewSstWriter(fd, t.conf, t.logger)
 
 	maxNodeSize := t.conf.SstSize * int(math.Pow10(nextLevel))
 
@@ -218,7 +252,7 @@ func (t *Tree) Compaction(level int) error {
 	writeCount := 0
 
 	for i, node := range nodes {
-		files += fmt.Sprintf("%d.%d.sst ", node.Level, node.SeqNo)
+		files += fmt.Sprintf("%d_%d_%s.sst ", node.Level, node.SeqNo, node.Extra)
 		record = record.Fill(nodes, i)
 	}
 	t.logger.Debugf("合并: %v", files)
@@ -233,29 +267,41 @@ func (t *Tree) Compaction(level int) error {
 			size, filter, index := writer.Finish()
 			writer.Close()
 
-			t.logger.Infof("写入: %d.%d.sst, 数据数: %d ", nextLevel, seqNo, writeCount)
-			writeCount = 0
-
-			t.AddNode(nextLevel, seqNo, size, filter, index)
-			seqNo = t.NextSeqNo(nextLevel)
-			fd, err = OpenFile(t.dir, os.O_WRONLY|os.O_CREATE, nextLevel, seqNo)
+			t.logger.Infof("写入: %s, 数据数: %d ", file, writeCount)
+			node, err := NewNode(nextLevel, seqNo, extra, file, size, filter, index, t.conf)
 			if err != nil {
-				t.logger.Errorf("打开/创建 %d,%d.sst文件失败:%v", nextLevel, seqNo, err)
+				return fmt.Errorf("创建lsm节点失败: %v", err)
+			}
+			t.insertNode(node)
+
+			writeCount = 0
+			seqNo = t.NextSeqNo(nextLevel)
+			file = formatName(nextLevel, seqNo, extra)
+
+			writer, err = NewSstWriter(file, t.conf, t.logger)
+			if err != nil {
+				t.logger.Errorf("%s 创建writer失败,无法合并lsm日志:%v", file, err)
 				return err
 			}
-			writer = NewSstWriter(fd, t.conf, t.logger)
 		}
 
 	}
-	size, filter, index := writer.Finish()
 
-	t.logger.Infof("写入: %d.%d.sst, 数据数: %d ", nextLevel, seqNo, writeCount)
-	t.AddNode(nextLevel, seqNo, size, filter, index)
-	t.RemoveNode(nodes)
+	size, filter, index := writer.Finish()
+	t.logger.Infof("写入: %s, 数据数: %d ", file, writeCount)
+
+	node, err := NewNode(nextLevel, seqNo, extra, file, size, filter, index, t.conf)
+	if err != nil {
+		return fmt.Errorf("创建lsm节点失败: %v", err)
+	}
+	t.insertNode(node)
+	t.removeNode(nodes)
+	t.compacc <- nextLevel
 
 	return nil
 }
 
+// 找出可合并节点
 func (t *Tree) PickupCompactionNode(level int) []*Node {
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -279,7 +325,7 @@ func (t *Tree) PickupCompactionNode(level int) []*Node {
 		}
 	}
 
-	for i := level; i <= level+1; i++ {
+	for i := level + 1; i >= level; i-- {
 		for _, node := range t.tree[i] {
 
 			if node.index == nil {
@@ -299,6 +345,7 @@ func (t *Tree) PickupCompactionNode(level int) []*Node {
 	return compactionNode
 }
 
+// 检查节点以进行合并
 func (t *Tree) CheckCompaction() {
 
 	level0 := make(chan struct{}, 100)
@@ -309,7 +356,8 @@ func (t *Tree) CheckCompaction() {
 			select {
 			case <-level0:
 				if len(t.tree[0]) > 4 {
-					t.Compaction(0)
+					t.logger.Infof("Level 0 执行合并, 当前数量: %d", len(t.tree[0]))
+					t.compaction(0)
 				}
 			case <-t.stopc:
 				close(level0)
@@ -330,10 +378,10 @@ func (t *Tree) CheckCompaction() {
 					for _, node := range t.tree[lv] {
 						totalSize += node.FileSize
 					}
-					// t.logger.infof("Level %d 当前大小: %d M, 最大大小: %d M\n", lv, totalSize/(1024*1024), maxNodeSize/(1024*1024))
 
 					if totalSize > maxNodeSize && (prevSize == 0 || totalSize < prevSize) {
-						t.Compaction(lv)
+						t.logger.Infof("Level %d 当前大小: %d M, 最大大小: %d M, 执行合并", lv, totalSize/(1024*1024), maxNodeSize/(1024*1024))
+						t.compaction(lv)
 						prevSize = totalSize
 					} else {
 						break
@@ -362,20 +410,36 @@ func (t *Tree) CheckCompaction() {
 	}()
 }
 
-func (t *Tree) Get(key []byte) (value []byte) {
+func (t *Tree) GetNodes() [][]*Node {
+	nodes := make([][]*Node, len(t.tree))
+	for i, l := range t.tree {
+		level := make([]*Node, len(l))
+		copy(level, l)
+		nodes[i] = level
+	}
+	return nodes
+}
 
+func (t *Tree) GetMaxlevel() int {
+	return t.conf.MaxLevel
+}
+
+// 获取指定key对应value
+func (t *Tree) Get(key []byte) []byte {
 	for _, nodes := range t.tree {
 		for i := len(nodes) - 1; i >= 0; i-- {
-
-			value = nodes[i].Get(key)
+			value, err := nodes[i].Get(key)
 			if value != nil {
-				return
+				return value
+			} else if err != nil {
+				t.logger.Errorf("获取key: %s 对应值失败: %v", string(value), err)
 			}
 		}
 	}
-	return
+	return nil
 }
 
+// 获取最小key
 func (t *Tree) GetMinKey() (key []byte) {
 
 	for i := len(t.tree) - 1; i >= 0; i-- {
@@ -402,6 +466,7 @@ func (t *Tree) GetMinKey() (key []byte) {
 	return
 }
 
+// 获取最大key
 func (t *Tree) GetMaxKey() (key []byte) {
 
 	for i := len(t.tree) - 1; i >= 0; i-- {
@@ -429,10 +494,30 @@ func (t *Tree) GetMaxKey() (key []byte) {
 	return
 }
 
-func NewTree(dir string, conf *Config, logger *zap.SugaredLogger) *Tree {
+// 从存储还原lsm树
+func RestoreTree(conf *Config) (*Tree, error) {
+
+	lt := NewTree(conf)
+	callbacks := []func(string, fs.FileInfo){
+		func(name string, fileInfo fs.FileInfo) {
+			err := lt.LoadNode(name)
+			if err != nil {
+				conf.Logger.Errorf("加载文件%s 到lsm树失败: %v", name, err)
+			}
+		},
+	}
+
+	if err := utils.CheckDir(conf.Dir, callbacks); err != nil {
+		return lt, fmt.Errorf("还原LSM Tree状态失败: %v", err)
+	}
+
+	return lt, nil
+}
+
+// 新建lsm树
+func NewTree(conf *Config) *Tree {
 
 	compactionChan := make(chan int, 100)
-
 	levelTree := make([][]*Node, conf.MaxLevel)
 
 	for i := range levelTree {
@@ -442,18 +527,16 @@ func NewTree(dir string, conf *Config, logger *zap.SugaredLogger) *Tree {
 	seqNos := make([]int, conf.MaxLevel)
 
 	lt := &Tree{
-		dir:     dir,
 		conf:    conf,
 		tree:    levelTree,
 		seqNo:   seqNos,
 		compacc: compactionChan,
 		stopc:   make(chan struct{}),
-		logger:  logger,
+		logger:  conf.Logger,
 	}
 
-	// for i:=0;i< runtime.NumCPU() -1;i++{
 	lt.CheckCompaction()
-	// }
+
 	return lt
 }
 
@@ -467,12 +550,12 @@ type Record struct {
 func (r *Record) Fill(source []*Node, idx int) *Record {
 	record := r
 
-	k, v := source[idx].NextRecord()
+	k, v := source[idx].nextRecord()
 	if k != nil {
 		record, idx = record.push(k, v, idx)
 
 		for idx > -1 {
-			k, v := source[idx].NextRecord()
+			k, v := source[idx].nextRecord()
 			if k != nil {
 				record, idx = record.push(k, v, idx)
 			} else {
@@ -527,13 +610,6 @@ func (r *Record) push(key, value []byte, idx int) (*Record, int) {
 	return h, -1
 }
 
-func OpenFile(dir string, flag, level, seqNo int) (*os.File, error) {
-
-	fd, err := os.OpenFile(path.Join(dir, strconv.Itoa(level)+"."+strconv.Itoa(seqNo)+".sst"), flag, 0644)
-
-	if err != nil {
-		return nil, err
-	}
-
-	return fd, nil
+func formatName(level, seqNo int, extra string) string {
+	return fmt.Sprintf("%d_%d_%s.sst", level, seqNo, extra)
 }

@@ -44,6 +44,7 @@ func Bootstrap(conf *Config) *RaftServer {
 	}
 
 	dir := path.Join(conf.Dir, conf.Name)
+	conf.Logger.Debugf("工作目录: %s", dir)
 
 	// 初始化raft节点
 	storage := raft.NewRaftStorage(dir, conf.Logger)

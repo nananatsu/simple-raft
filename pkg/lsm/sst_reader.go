@@ -8,6 +8,7 @@ import (
 	"io"
 	"kvdb/pkg/utils"
 	"os"
+	"path"
 	"sync"
 
 	"github.com/golang/snappy"
@@ -86,7 +87,7 @@ func (r *SstReader) ReadFilter() (map[uint64][]byte, error) {
 	}
 	r.reader.Reset(r.fd)
 
-	compress, err := r.Read(r.FilterSize)
+	compress, err := r.read(r.FilterSize)
 	if err != nil {
 		return nil, err
 	}
@@ -117,7 +118,7 @@ func (r *SstReader) ReadIndex() ([]*Index, error) {
 	}
 	r.reader.Reset(r.fd)
 
-	compress, err := r.Read(r.IndexSize)
+	compress, err := r.read(r.IndexSize)
 	if err != nil {
 		return nil, err
 	}
@@ -144,7 +145,7 @@ func (r *SstReader) ReadBlock(offset, size uint64) ([]byte, error) {
 	}
 	r.reader.Reset(r.fd)
 
-	compressed, err := r.Read(int64(size) - 4)
+	compressed, err := r.read(int64(size) - 4)
 	if err != nil {
 		return nil, err
 	}
@@ -161,10 +162,22 @@ func (r *SstReader) ReadBlock(offset, size uint64) ([]byte, error) {
 	return snappy.Decode(r.compressScratch, compressed)
 }
 
-func (r *SstReader) Read(size int64) (b []byte, err error) {
+func (r *SstReader) read(size int64) (b []byte, err error) {
 	b = make([]byte, size)
 	_, err = io.ReadFull(r.reader, b)
 	return
+}
+
+func (r *SstReader) Read(offset, size int64) ([]byte, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	if _, err := r.fd.Seek(offset, io.SeekStart); err != nil {
+		return nil, err
+	}
+	r.reader.Reset(r.fd)
+
+	return r.read(size)
 }
 
 func (r *SstReader) Destory() {
@@ -178,12 +191,18 @@ func (r *SstReader) Close() {
 	r.fd.Close()
 }
 
-func NewSstReader(fd *os.File, conf *Config) *SstReader {
+func NewSstReader(file string, conf *Config) (*SstReader, error) {
+	fd, err := os.OpenFile(path.Join(conf.Dir, file), os.O_RDONLY, 0644)
+
+	if err != nil {
+		return nil, fmt.Errorf("无法加入节点，打开 %s文件失败:%v", file, err)
+	}
+
 	return &SstReader{
 		fd:     fd,
 		conf:   conf,
 		reader: bufio.NewReader(fd),
-	}
+	}, nil
 }
 
 func DecodeBlock(block []byte) ([]byte, []int) {

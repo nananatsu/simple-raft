@@ -73,6 +73,7 @@ func (s *RaftServer) addServerPeer(stream pb.Raft_ConsensusServer, msg *pb.RaftM
 }
 
 func (s *RaftServer) put(key, value []byte) {
+	s.metric <- pb.MessageType_PROPOSE
 	s.node.Propose([]*pb.LogEntry{{Data: raft.Encode(key, value)}})
 }
 

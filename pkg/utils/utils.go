@@ -2,7 +2,7 @@ package utils
 
 import "math/rand"
 
-const letterBytes = "abcdefghijklmnopqrstuvwxyz"
+const letterBytes = "abcdefghijklmnopqrstuvwxyzQWERTYUIOPASDFGHJKLZXCVBNM"
 
 func RandStringBytesRmndr(n int) []byte {
 	b := make([]byte, n)

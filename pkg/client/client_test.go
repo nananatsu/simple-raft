@@ -6,6 +6,7 @@ import (
 	pb "kvdb/pkg/clientpb"
 	"kvdb/pkg/server"
 	"kvdb/pkg/utils"
+	"math/rand"
 	"testing"
 	"time"
 )
@@ -79,6 +80,30 @@ func TestPut(t *testing.T) {
 	client := NewClient(servers, sugar)
 	client.Connect()
 	client.Put("heello", "world")
+
+}
+
+func TestPut2(t *testing.T) {
+
+	servers, _, _ := InitServer()
+
+	logger := utils.GetLogger("../../build/")
+	sugar := logger.Sugar()
+
+	client := NewClient(servers, sugar)
+	client.Connect()
+
+	for i := 0; i < 10; i++ {
+		go func() {
+			for i := 0; i < 1000000; i++ {
+				key := utils.RandStringBytesRmndr(rand.Intn(10) + 10)
+				value := utils.RandStringBytesRmndr(20)
+				client.Put(string(key), string(value))
+			}
+		}()
+	}
+
+	<-time.After(600 * time.Second)
 
 }
 

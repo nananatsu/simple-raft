@@ -81,7 +81,6 @@ func (s *SkipList) getNode(key []byte) (int, bool) {
 		if next != 0 {
 			keyStart := s.kvNode[next]
 			keyLen := s.kvNode[next+nKey]
-
 			cmp = bytes.Compare(s.kvData[keyStart:keyStart+keyLen], key)
 		}
 
@@ -102,25 +101,23 @@ func (s *SkipList) getNode(key []byte) (int, bool) {
 }
 
 func (s *SkipList) Put(key []byte, value []byte) {
-
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	lenv := len(value)
+	lenk := len(key)
 	n, b := s.getNode(key)
-
 	keyStart := len(s.kvData)
 	s.kvData = append(s.kvData, key...)
 	s.kvData = append(s.kvData, value...)
 
 	if b {
-		s.kvSize += len(value) - s.kvNode[n+nVal]
-
+		s.kvSize += lenv - s.kvNode[n+nVal]
 		s.kvNode[n] = keyStart
-		s.kvNode[n+nVal] = len(value)
+		s.kvNode[n+nVal] = lenv
 	}
 
 	h := s.randHeight()
-
 	if h > s.maxHeight {
 		for i := s.maxHeight; i < h; i++ {
 			s.prevNode[i] = 0
@@ -129,14 +126,14 @@ func (s *SkipList) Put(key []byte, value []byte) {
 	}
 
 	n = len(s.kvNode)
-	s.kvNode = append(s.kvNode, keyStart, len(key), len(value), h)
+	s.kvNode = append(s.kvNode, keyStart, lenk, lenv, h)
 	for i, node := range s.prevNode[:h] {
 		m := node + nNext + i
 		s.kvNode = append(s.kvNode, s.kvNode[m])
 		s.kvNode[m] = n
 	}
 
-	s.kvSize += len(value) + len(key)
+	s.kvSize += lenk + lenv
 }
 
 func (s *SkipList) Get(key []byte) []byte {

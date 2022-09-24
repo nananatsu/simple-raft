@@ -3,8 +3,10 @@ package lsm
 import (
 	"bytes"
 	"encoding/binary"
+	"fmt"
 	"kvdb/pkg/filter"
 	"os"
+	"path"
 
 	"go.uber.org/zap"
 )
@@ -139,7 +141,12 @@ func (w *SstWriter) Close() {
 	w.indexBuf.Reset()
 }
 
-func NewSstWriter(fd *os.File, conf *Config, logger *zap.SugaredLogger) *SstWriter {
+func NewSstWriter(file string, conf *Config, logger *zap.SugaredLogger) (*SstWriter, error) {
+	fd, err := os.OpenFile(path.Join(conf.Dir, file), os.O_WRONLY|os.O_CREATE, 0644)
+	if err != nil {
+		return nil, fmt.Errorf("创建 %s 失败: %v", file, err)
+	}
+
 	return &SstWriter{
 		conf:        conf,
 		fd:          fd,
@@ -154,5 +161,5 @@ func NewSstWriter(fd *os.File, conf *Config, logger *zap.SugaredLogger) *SstWrit
 		indexBlock:  NewBlock(conf),
 		prevKey:     make([]byte, 0),
 		logger:      logger,
-	}
+	}, nil
 }

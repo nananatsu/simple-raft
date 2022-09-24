@@ -53,6 +53,43 @@ func (c *Cluster) Vote(id uint64, granted bool) {
 	c.voteResp[id] = granted
 }
 
+func (c *Cluster) GetSnapshot(id uint64, prevSuccess bool) *pb.Snapshot {
+	p := c.progress[id]
+
+	if p != nil {
+		return p.GetSnapshot(prevSuccess)
+		// if !prevSuccess {
+		// 	c.logger.Debugf("%s 前次快照未发送完成", strconv.FormatUint(id, 16))
+		// 	return p.prevSnap
+		// }
+
+		// if p.snapc == nil {
+		// 	c.logger.Debugf("%s 快照读取通道为空", strconv.FormatUint(id, 16))
+		// 	return nil
+		// }
+		// snap := <-p.snapc
+		// if snap == nil {
+		// 	c.logger.Debugf("%s 读取快照为空", strconv.FormatUint(id, 16))
+		// 	p.snapc = nil
+		// 	p.installingSnapshot = false
+		// }
+		// p.prevSnap = snap
+
+		// return snap
+	} else {
+		c.logger.Debugf("%s 未初始化完成，无法发送快照", strconv.FormatUint(id, 16))
+	}
+
+	return nil
+}
+
+func (c *Cluster) InstallSnapshot(id uint64, snapc chan *pb.Snapshot) {
+	p := c.progress[id]
+	if p != nil {
+		p.InstallSnapshot(snapc)
+	}
+}
+
 func (c *Cluster) ChangeMember(changes []*pb.MemberChange) error {
 
 	if len(c.outcoming) > 0 && len(changes) > 0 {
@@ -105,10 +142,17 @@ func (c *Cluster) UpdateLogIndex(id uint64, lastIndex uint64) {
 	}
 }
 
-func (c *Cluster) ResetLogIndex(id uint64, lastIndex uint64) {
+func (c *Cluster) Reset() {
+	for _, rp := range c.progress {
+		rp.Reset()
+	}
+	c.ResetVoteResult()
+}
+
+func (c *Cluster) ResetLogIndex(id uint64, lastIndex uint64, leaderLastIndex uint64) {
 	p := c.progress[id]
 	if p != nil {
-		p.Reset(lastIndex)
+		p.ResetLogIndex(lastIndex, leaderLastIndex)
 	}
 }
 

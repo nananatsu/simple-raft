@@ -4,24 +4,28 @@ import (
 	"encoding/binary"
 	"io/fs"
 	pb "kvdb/pkg/raftpb"
-	"kvdb/pkg/rawdb"
+	"kvdb/pkg/skiplist"
 	"kvdb/pkg/utils"
+	"kvdb/pkg/wal"
 	"os"
 	"path"
-	"sync"
+	"sort"
+	"strconv"
+	"strings"
 	"time"
 
 	"go.uber.org/zap"
 	"google.golang.org/protobuf/proto"
 )
 
-const LastLogKey = "___last___include___"
 const logSnapShotSize = 8 * 1024 * 1024
-const memdbFlushInterval = 10 * time.Second
+const walFlushInterval = 10 * time.Second
 
 type Storage interface {
 	Append(entries []*pb.LogEntry)
-	GetEntries(startIndex, endIndex uint64) []*pb.LogEntry
+	Snapshot(force bool)
+	InstallSnapshot(snap *pb.Snapshot) (bool, error)
+	GetEntries(startIndex, endIndex uint64) ([]*pb.LogEntry, chan *pb.Snapshot)
 	GetTerm(index uint64) uint64
 	GetLast() (uint64, uint64)
 	Notify() []*pb.MemberChange
@@ -30,11 +34,12 @@ type Storage interface {
 }
 
 type RaftStorage struct {
-	mu         sync.RWMutex
-	db         *rawdb.MemDB
+	walw       *wal.WalWriter
+	db         *skiplist.SkipList
 	snap       *Snapshot
 	keyScratch [20]byte
 	notify     [][]*pb.MemberChange
+	stopc      chan struct{}
 	logger     *zap.SugaredLogger
 }
 
@@ -49,9 +54,6 @@ func (rs *RaftStorage) Notify() []*pb.MemberChange {
 }
 
 func (rs *RaftStorage) Append(entries []*pb.LogEntry) {
-	rs.mu.Lock()
-	defer rs.mu.Unlock()
-
 	for _, entry := range entries {
 		if entry.Type == pb.EntryType_MEMBER_CHNAGE {
 			var changeCol pb.MemberChangeCollection
@@ -64,17 +66,38 @@ func (rs *RaftStorage) Append(entries []*pb.LogEntry) {
 		binary.BigEndian.PutUint64(rs.keyScratch[0:], entry.Index)
 		rs.keyScratch[8] = uint8(entry.Type)
 		n := binary.PutUvarint(rs.keyScratch[9:], entry.Term)
-		rs.db.Put(rs.keyScratch[:8], append(rs.keyScratch[8:8+n+1], entry.Data...))
-	}
 
-	if rs.db.Size() > logSnapShotSize {
-		rs.snap.Add(rs.db)
-		rs.db = rawdb.NewMemDB(&rawdb.MemDBConfig{Dir: rs.db.GetDir(), SeqNo: rs.db.GetSeqNo() + 1, WalFlushInterval: memdbFlushInterval}, rs.logger)
+		k := rs.keyScratch[:8]
+		v := append(rs.keyScratch[8:8+n+1], entry.Data...)
+
+		rs.walw.Write(k, v)
+		rs.db.Put(k, v)
+	}
+	rs.Snapshot(false)
+}
+
+func (rs *RaftStorage) Snapshot(force bool) {
+	if rs.db.Size() > logSnapShotSize || force {
+		oldWalw := rs.walw
+		walw, err := rs.walw.Next()
+		if err != nil {
+			oldWalw = nil
+			rs.logger.Errorf("新建预写日志失败: %v", err)
+		} else {
+			rs.walw = walw
+		}
+		go func(w *wal.WalWriter, sl *skiplist.SkipList) {
+			rs.snap.Add(sl)
+			if oldWalw != nil {
+				oldWalw.Finish()
+			}
+		}(oldWalw, rs.db)
+		rs.db = skiplist.NewSkipList()
 	}
 }
 
 func (rs *RaftStorage) GetTerm(index uint64) (term uint64) {
-	if index == rs.snap.latIncludeIndex {
+	if index == rs.snap.lastIncludeIndex {
 		return rs.snap.lastIncludeTerm
 	}
 
@@ -94,15 +117,20 @@ func (rs *RaftStorage) GetLast() (uint64, uint64) {
 		term, _ := binary.Uvarint(v[1:])
 		return index, term
 	}
-	return rs.snap.latIncludeIndex, rs.snap.lastIncludeTerm
+	return rs.snap.lastIncludeIndex, rs.snap.lastIncludeTerm
 }
 
 // 区间: [)
-func (rs *RaftStorage) GetEntries(startIndex, endIndex uint64) []*pb.LogEntry {
+func (rs *RaftStorage) GetEntries(startIndex, endIndex uint64) ([]*pb.LogEntry, chan *pb.Snapshot) {
 
-	if startIndex < rs.snap.latIncludeIndex {
-		rs.logger.Infof("请求日志 %d 存在于snapshot: %d", startIndex, rs.snap.latIncludeIndex)
-		return nil
+	if startIndex < rs.snap.lastIncludeIndex {
+		rs.logger.Infof("请求日志 %d 已压缩到快照: %d", startIndex, rs.snap.lastIncludeIndex)
+		snapc, err := rs.getSnapshot(startIndex)
+		if err != nil {
+			rs.logger.Infof("获取快照失败: %v", err)
+		}
+
+		return nil, snapc
 	}
 
 	binary.BigEndian.PutUint64(rs.keyScratch[0:], startIndex)
@@ -124,12 +152,36 @@ func (rs *RaftStorage) GetEntries(startIndex, endIndex uint64) []*pb.LogEntry {
 		rs.logger.Warnf("请求日志: %d~%d ,实际加载： 0", startIndex, endIndex)
 	}
 
-	return ret
+	return ret, nil
+}
+
+func (rs *RaftStorage) getSnapshot(index uint64) (chan *pb.Snapshot, error) {
+	return rs.snap.GetSegment(index)
+}
+
+func (rs *RaftStorage) InstallSnapshot(snap *pb.Snapshot) (bool, error) {
+	return rs.snap.AddSnapshotSegment(snap)
 }
 
 func (rs *RaftStorage) Close() {
-	rs.db.Close()
+
+	rs.stopc <- struct{}{}
 	rs.snap.Close()
+}
+
+func (rs *RaftStorage) checkFlush() {
+	go func() {
+		ticker := time.NewTicker(walFlushInterval)
+		for {
+			select {
+			case <-ticker.C:
+				rs.walw.Flush()
+			case <-rs.stopc:
+				rs.walw.Flush()
+				return
+			}
+		}
+	}()
 }
 
 func NewRaftStorage(dir string, logger *zap.SugaredLogger) *RaftStorage {
@@ -143,51 +195,81 @@ func NewRaftStorage(dir string, logger *zap.SugaredLogger) *RaftStorage {
 		os.Mkdir(walDir, os.ModePerm)
 	}
 
-	maxSeqNo := 0
-	memdbs := make([]*rawdb.MemDB, 0)
-	callbacks := []func(int, int, string, fs.FileInfo){
-		func(level, seqNo int, subfix string, info fs.FileInfo) {
-			if level == 0 && seqNo > maxSeqNo {
-				maxSeqNo = seqNo
+	memdbs := make(map[int]*skiplist.SkipList, 1)
+	wals := *new(sort.IntSlice)
+
+	callbacks := []func(string, fs.FileInfo){
+		func(name string, fileInfo fs.FileInfo) {
+			info := strings.Split(name, ".")
+			if len(info) != 2 {
+				return
 			}
-		},
-		func(level, seqNo int, subfix string, info fs.FileInfo) {
-			if subfix == "wal" {
-				db, err := rawdb.RestoreMemDB(&rawdb.MemDBConfig{Dir: walDir, SeqNo: seqNo, WalFlushInterval: memdbFlushInterval}, logger)
+
+			seqNo, err := strconv.Atoi(info[0])
+			if err != nil {
+				return
+			}
+
+			if info[1] == "wal" {
+				file := path.Join(walDir, strconv.Itoa(seqNo)+".wal")
+				db, err := wal.Restore(file)
 				if err != nil {
-					logger.Errorf("还原memdb失败:%v", err)
-				} else {
-					memdbs = append(memdbs, db)
+					logger.Errorf("还原%s失败:%v", file, err)
+				}
+
+				logger.Infof("还原预写日志 %s", file)
+				if db != nil {
+					wals = append(wals, seqNo)
+					memdbs[seqNo] = db
 				}
 			}
 		},
 	}
 
 	if err := utils.CheckDir(walDir, callbacks); err != nil {
-		logger.Infof("打开db文件夹失败", err)
+		logger.Errorf("打开db文件夹%s 失败: %v", walDir, err)
 	}
 
-	var db *rawdb.MemDB
-	for i, md := range memdbs {
-		if md.GetSeqNo() == maxSeqNo {
-			db = md
-			memdbs[i] = nil
-		}
+	var db *skiplist.SkipList
+	var seq int
+	wals.Sort()
+	if wals.Len() > 0 {
+		seq = wals[wals.Len()-1]
+		db = memdbs[seq]
+		delete(memdbs, seq)
 	}
+
 	if db == nil {
-		db = rawdb.NewMemDB(&rawdb.MemDBConfig{Dir: walDir, SeqNo: maxSeqNo + 1, WalFlushInterval: memdbFlushInterval}, logger)
+		db = skiplist.NewSkipList()
+	}
+
+	w, err := wal.NewWalWriter(walDir, seq, logger)
+	if err != nil {
+		logger.Errorf("创建wal writer失败: %v", walDir, err)
+	}
+
+	snap, err := NewSnapshot(dir, logger)
+
+	if err != nil {
+		logger.Errorf("读取快照失败", err)
 	}
 
 	s := &RaftStorage{
+		walw:   w,
 		db:     db,
-		snap:   NewSnapshot(dir, logger),
+		snap:   snap,
 		notify: make([][]*pb.MemberChange, 0),
+		stopc:  make(chan struct{}),
 		logger: logger,
 	}
 
-	for _, md := range memdbs {
+	for seq, md := range memdbs {
 		s.snap.Add(md)
+		os.Remove(path.Join(walDir, strconv.Itoa(seq)+".wal"))
 	}
+
+	s.checkFlush()
+
 	return s
 }
 

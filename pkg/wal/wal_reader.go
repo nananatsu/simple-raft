@@ -3,21 +3,20 @@ package wal
 import (
 	"bytes"
 	"encoding/binary"
+	"fmt"
 	"io"
+	"kvdb/pkg/skiplist"
 	"kvdb/pkg/utils"
 	"os"
-
-	"go.uber.org/zap"
 )
 
 const walBlockSize = 32 * 1024
 
 type WalReader struct {
-	fd     *os.File
-	block  []byte
-	data   []byte
-	buf    *bytes.Buffer
-	logger *zap.SugaredLogger
+	fd    *os.File
+	block []byte
+	data  []byte
+	buf   *bytes.Buffer
 }
 
 func (r *WalReader) Read() error {
@@ -28,15 +27,15 @@ func (r *WalReader) Read() error {
 	return nil
 }
 
-func (r *WalReader) Next() ([]byte, []byte) {
+func (r *WalReader) Next() ([]byte, []byte, error) {
 	var prevBlockType uint8
 	for r.buf == nil {
 		err := r.Read()
 		if err != nil {
-			if err != io.EOF {
-				r.logger.Errorf("读取预写日志块失败:%v", err)
+			if err == io.EOF {
+				return nil, nil, nil
 			}
-			return nil, nil
+			return nil, nil, fmt.Errorf("读取预写日志块失败:%v", err)
 		}
 		crc := binary.LittleEndian.Uint32(r.block[0:4])
 		length := binary.LittleEndian.Uint16(r.block[4:6])
@@ -62,22 +61,21 @@ func (r *WalReader) Next() ([]byte, []byte) {
 				}
 			}
 			prevBlockType = blockType
-			// r.logger.Debugf("wal块类型 %d, 块记录数据长度； %d, 数据长度： %d ,块: %v", blockType, length, len(r.data), r.data[:20])
 		} else {
-			r.logger.Debugln("预写日志校验失败")
-			if prevBlockType == kMiddle || prevBlockType == kLast {
-				r.buf = bytes.NewBuffer(r.data)
-			}
+			return nil, nil, fmt.Errorf("预写日志校验失败")
+			// if prevBlockType == kMiddle || prevBlockType == kLast {
+			// 	r.buf = bytes.NewBuffer(r.data)
+			// }
 		}
 	}
 
-	key, value, err := ReadRecord(r.buf, r.logger)
+	key, value, err := ReadRecord(r.buf)
 	if err == nil {
-		return key, value
+		return key, value, nil
 	}
 
 	if err != io.EOF {
-		r.logger.Errorf("读取预写日志失败", err)
+		return nil, nil, fmt.Errorf("读取预写日志失败: %v", err)
 	}
 
 	r.buf = nil
@@ -91,15 +89,14 @@ func (r *WalReader) Close() {
 	r.data = nil
 }
 
-func NewWalReader(fd *os.File, logger *zap.SugaredLogger) *WalReader {
+func NewWalReader(fd *os.File) *WalReader {
 	return &WalReader{
-		fd:     fd,
-		block:  make([]byte, walBlockSize),
-		logger: logger,
+		fd:    fd,
+		block: make([]byte, walBlockSize),
 	}
 }
 
-func ReadRecord(buf *bytes.Buffer, logger *zap.SugaredLogger) ([]byte, []byte, error) {
+func ReadRecord(buf *bytes.Buffer) ([]byte, []byte, error) {
 
 	keyLen, err := binary.ReadUvarint(buf)
 
@@ -128,4 +125,31 @@ func ReadRecord(buf *bytes.Buffer, logger *zap.SugaredLogger) ([]byte, []byte, e
 	}
 
 	return key, value, nil
+}
+
+func Restore(walFile string) (*skiplist.SkipList, error) {
+
+	// walFile := path.Join(dir, strconv.Itoa(0)+"."+strconv.Itoa(seqNo)+".wal")
+	fd, err := os.OpenFile(walFile, os.O_RDONLY, 0644)
+	if err != nil {
+		return nil, fmt.Errorf("打开预写日志文件%s 失败: %v", walFile, err)
+	}
+
+	sl := skiplist.NewSkipList()
+	r := NewWalReader(fd)
+	defer r.Close()
+
+	for {
+		k, v, err := r.Next()
+		if err != nil {
+			return sl, err
+		}
+
+		if len(k) == 0 {
+			break
+		}
+		sl.Put(k, v)
+	}
+
+	return sl, nil
 }

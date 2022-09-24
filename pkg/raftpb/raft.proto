@@ -18,13 +18,15 @@ enum MemberChangeType {
 
 enum MessageType {
   VOTE = 0;
-  VOTE_RES = 1;
+  VOTE_RESP = 1;
   HEARTBEAT = 2;
   HEARTBEAT_RESP = 3;
   APPEND_ENTRY = 4;
   APPEND_ENTRY_RESP = 5;
   PROPOSE = 6;
   PROPOSE_RESP = 7;
+  INSTALL_SNAPSHOT = 8;
+  INSTALL_SNAPSHOT_RESP = 9;
 }
 
 message LogEntry {
@@ -40,8 +42,16 @@ message MemberChange {
   string address = 3;
 }
 
-message MemberChangeCollection {
-  repeated MemberChange changes = 1;
+message MemberChangeCollection { repeated MemberChange changes = 1; }
+
+message Snapshot {
+  uint64 lastIncludeIndex = 1;
+  uint64 lastIncludeTerm = 2;
+  uint32 level = 3;
+  uint32 segment = 4;
+  uint64 offset = 5;
+  bytes data = 6;
+  bool done = 7;
 }
 
 message RaftMessage {
@@ -54,4 +64,5 @@ message RaftMessage {
   uint64 lastCommit = 7;
   repeated LogEntry entry = 8;
   bool success = 9;
+  Snapshot snapshot = 10;
 }

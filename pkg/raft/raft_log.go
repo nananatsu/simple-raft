@@ -17,29 +17,28 @@ type RaftLog struct {
 	logger           *zap.SugaredLogger
 }
 
-func (l *RaftLog) GetEntries(index uint64) []*pb.LogEntry {
-	var entries []*pb.LogEntry
-
+func (l *RaftLog) GetEntries(index uint64, maxSize int) ([]*pb.LogEntry, chan *pb.Snapshot) {
 	if index <= l.lastAppliedIndex {
 		endIndex := index + maxAppendEntriesSize
 		if endIndex >= l.lastAppliedIndex {
 			endIndex = l.lastAppliedIndex + 1
 		}
-		entries = l.storage.GetEntries(index, endIndex)
+		return l.storage.GetEntries(index, endIndex)
 	} else {
+		var entries []*pb.LogEntry
 		for i, entry := range l.logs {
 			if entry.Index == index {
-				if len(l.logs)-i > 1000 {
-					entries = l.logs[i : i+1000]
+				if len(l.logs)-i > maxSize {
+					entries = l.logs[i : i+maxSize]
 				} else {
 					entries = l.logs[i:]
 				}
 				break
 			}
 		}
+		return entries, nil
 	}
 
-	return entries
 }
 
 func (l *RaftLog) GetTerm(index uint64) uint64 {
@@ -70,6 +69,21 @@ func (l *RaftLog) AppendEntry(entry []*pb.LogEntry) {
 	// }
 
 	l.logs = append(l.logs, entry...)
+}
+
+func (l *RaftLog) InstallSnapshot(snap *pb.Snapshot) (bool, error) {
+	if len(l.logs) > 0 {
+		lastLogIndex, _ := l.GetLastLogIndexAndTerm()
+		l.Apply(lastLogIndex, lastLogIndex)
+		l.storage.Snapshot(true)
+	}
+	added, err := l.storage.InstallSnapshot(snap)
+
+	if added {
+		l.ReloadSnapshot()
+	}
+
+	return added, err
 }
 
 func (l *RaftLog) HasPrevLog(lastIndex, lastTerm uint64) bool {
@@ -165,8 +179,15 @@ func (l *RaftLog) GetLastLogIndexAndTerm() (lastLogIndex, lastLogTerm uint64) {
 		lastLogTerm = l.lastAppliedTerm
 	}
 	// l.logger.Debugf("lastLogIndex: %d, lastLogTerm: %d, log size: %d", lastLogIndex, lastLogTerm, len(l.logs))
-
 	return
+}
+
+func (l *RaftLog) ReloadSnapshot() {
+	lastIndex, lastTerm := l.storage.GetLast()
+	if lastIndex > l.lastAppliedIndex {
+		l.lastAppliedIndex = lastIndex
+		l.lastAppliedTerm = lastTerm
+	}
 }
 
 func NewRaftLog(storage Storage, logger *zap.SugaredLogger) *RaftLog {

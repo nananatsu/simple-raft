@@ -76,6 +76,7 @@ func TestClusterPropose(t *testing.T) {
 
 func TestClusterMemberChange(t *testing.T) {
 
+	dir := "../../build/"
 	peers, servers := InitServer()
 	for _, s := range servers {
 		go func(s *RaftServer) {
@@ -85,11 +86,11 @@ func TestClusterMemberChange(t *testing.T) {
 
 					name := "raft_4"
 					peerAddress := fmt.Sprintf("localhost:%d", 9123+3)
-					logger := utils.GetLogger(s.dir + name)
+					logger := utils.GetLogger(dir + name)
 					sugar := logger.Sugar()
 
 					newConf := &Config{
-						Dir:           s.dir,
+						Dir:           dir,
 						Name:          name,
 						PeerAddress:   peerAddress,
 						ServerAddress: fmt.Sprintf("localhost:%d", 9223+3),
@@ -105,20 +106,21 @@ func TestClusterMemberChange(t *testing.T) {
 
 					sn := Bootstrap(newConf)
 					go sn.Start()
+					break
 
-					for {
-						time.Sleep(5 * time.Second)
-						if s.node.Ready() {
-							s.changeMember(nodes, raftpb.MemberChangeType_REMOVE_NODE)
-							break
-						}
-					}
+					// for {
+					// 	time.Sleep(5 * time.Second)
+					// 	if s.node.Ready() {
+					// 		s.changeMember(nodes, raftpb.MemberChangeType_REMOVE_NODE)
+					// 		break
+					// 	}
+					// }
 
-					for i := 0; i < 10000; i++ {
-						key := utils.RandStringBytesRmndr(rand.Intn(10) + 10)
-						value := utils.RandStringBytesRmndr(20)
-						s.put(key, value)
-					}
+					// for i := 0; i < 10000; i++ {
+					// 	key := utils.RandStringBytesRmndr(rand.Intn(10) + 10)
+					// 	value := utils.RandStringBytesRmndr(20)
+					// 	s.put(key, value)
+					// }
 				}
 			}
 		}(s)
