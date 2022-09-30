@@ -17,27 +17,23 @@ import (
 type SstReader struct {
 	mu              sync.RWMutex
 	conf            *Config
-	fd              *os.File
-	reader          *bufio.Reader
-	FilterOffset    int64
-	FilterSize      int64
-	IndexOffset     int64
-	IndexSize       int64
-	compressScratch []byte
+	fd              *os.File      // sst文件(读)
+	reader          *bufio.Reader //包装file reader
+	FilterOffset    int64         // 过滤块起始偏移
+	FilterSize      int64         // 过滤块大小
+	IndexOffset     int64         // 索引块起始偏移
+	IndexSize       int64         // 索引块大小
+	compressScratch []byte        // 解压缓冲
 }
 
-type MetaData struct {
-	FilterOffset int64
-	IndexOffset  int64
-	IndexSize    int64
-}
-
+// 索引格式
 type Index struct {
-	Key    []byte
-	Offset uint64
-	Size   uint64
+	Key    []byte // 分隔键
+	Offset uint64 // 前一数据块偏移
+	Size   uint64 // 前一数据块大小
 }
 
+// 读取sst尾，解析元数据
 func (r *SstReader) ReadFooter() error {
 	_, err := r.fd.Seek(-int64(r.conf.SstFooterSize), io.SeekEnd)
 	if err != nil {
@@ -75,6 +71,7 @@ func (r *SstReader) ReadFooter() error {
 	return nil
 }
 
+// 读取过滤块
 func (r *SstReader) ReadFilter() (map[uint64][]byte, error) {
 	if r.FilterOffset == 0 {
 		if err := r.ReadFooter(); err != nil {
@@ -106,6 +103,7 @@ func (r *SstReader) ReadFilter() (map[uint64][]byte, error) {
 	return ReadFilter(data), nil
 }
 
+// 读取索引块
 func (r *SstReader) ReadIndex() ([]*Index, error) {
 	if r.IndexOffset == 0 {
 		if err := r.ReadFooter(); err != nil {
@@ -136,6 +134,7 @@ func (r *SstReader) ReadIndex() ([]*Index, error) {
 	return ReadIndex(data), nil
 }
 
+// 读取块
 func (r *SstReader) ReadBlock(offset, size uint64) ([]byte, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -162,12 +161,14 @@ func (r *SstReader) ReadBlock(offset, size uint64) ([]byte, error) {
 	return snappy.Decode(r.compressScratch, compressed)
 }
 
+// 读取指定大小
 func (r *SstReader) read(size int64) (b []byte, err error) {
 	b = make([]byte, size)
 	_, err = io.ReadFull(r.reader, b)
 	return
 }
 
+// 读取原始字节
 func (r *SstReader) Read(offset, size int64) ([]byte, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -180,12 +181,14 @@ func (r *SstReader) Read(offset, size int64) ([]byte, error) {
 	return r.read(size)
 }
 
+// 销毁文件
 func (r *SstReader) Destory() {
 	r.reader.Reset(r.fd)
 	r.fd.Close()
 	os.Remove(r.fd.Name())
 }
 
+// 关闭文件读取
 func (r *SstReader) Close() {
 	r.reader.Reset(r.fd)
 	r.fd.Close()
@@ -205,6 +208,7 @@ func NewSstReader(file string, conf *Config) (*SstReader, error) {
 	}, nil
 }
 
+// 解析数据块为 记录、重启点
 func DecodeBlock(block []byte) ([]byte, []int) {
 
 	n := len(block)
@@ -220,6 +224,7 @@ func DecodeBlock(block []byte) ([]byte, []int) {
 	return block[:oRestartPoint], restartPoint
 }
 
+// 从记录缓冲读取记录
 func ReadRecord(prevKey []byte, buf *bytes.Buffer) ([]byte, []byte, error) {
 
 	keyPrefixLen, err := binary.ReadUvarint(buf)
@@ -257,6 +262,7 @@ func ReadRecord(prevKey []byte, buf *bytes.Buffer) ([]byte, []byte, error) {
 	return actualKey, value, nil
 }
 
+// 解析索引块为索引数组
 func ReadIndex(index []byte) []*Index {
 
 	data, _ := DecodeBlock(index)
@@ -284,6 +290,7 @@ func ReadIndex(index []byte) []*Index {
 	return indexes
 }
 
+// 解析过滤块为 偏移->布隆过滤器 map
 func ReadFilter(index []byte) map[uint64][]byte {
 
 	data, _ := DecodeBlock(index)

@@ -7,6 +7,11 @@ enum ConfigType {
   REMOVE_NODE = 1;
 }
 
+message KvPair {
+  bytes key = 1;
+  bytes value = 2;
+}
+
 message Request {
   uint64 clientId = 1;
   uint64 seq = 2;

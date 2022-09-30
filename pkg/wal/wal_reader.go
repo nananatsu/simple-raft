@@ -129,7 +129,6 @@ func ReadRecord(buf *bytes.Buffer) ([]byte, []byte, error) {
 
 func Restore(walFile string) (*skiplist.SkipList, error) {
 
-	// walFile := path.Join(dir, strconv.Itoa(0)+"."+strconv.Itoa(seqNo)+".wal")
 	fd, err := os.OpenFile(walFile, os.O_RDONLY, 0644)
 	if err != nil {
 		return nil, fmt.Errorf("打开预写日志文件%s 失败: %v", walFile, err)

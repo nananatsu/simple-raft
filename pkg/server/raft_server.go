@@ -22,7 +22,6 @@ import (
 	"github.com/shirou/gopsutil/v3/process"
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
-	"google.golang.org/protobuf/proto"
 )
 
 type RaftServer struct {
@@ -37,6 +36,7 @@ type RaftServer struct {
 	raftServer    *grpc.Server
 	kvServer      *grpc.Server
 	peers         map[uint64]*Peer
+	encoding      raft.Encoding
 	node          *raft.RaftNode
 	close         bool
 	stopc         chan struct{}
@@ -44,6 +44,7 @@ type RaftServer struct {
 	logger        *zap.SugaredLogger
 }
 
+// 接受节点双向流，用以发送消息
 func (s *RaftServer) Consensus(stream pb.Raft_ConsensusServer) error {
 	msg, err := stream.Recv()
 	if err == io.EOF {
@@ -57,29 +58,39 @@ func (s *RaftServer) Consensus(stream pb.Raft_ConsensusServer) error {
 	return s.addServerPeer(stream, msg)
 }
 
+// 添加对等节点-双向流
 func (s *RaftServer) addServerPeer(stream pb.Raft_ConsensusServer, msg *pb.RaftMessage) error {
 
 	p, isMember := s.peers[msg.From]
 	if !isMember {
-		s.logger.Debugf("收到非集群节点 %s消息 %s", strconv.FormatUint(msg.From, 16), msg.String())
+		s.logger.Debugf("收到非集群节点 %s 消息 %s", strconv.FormatUint(msg.From, 16), msg.String())
 		return fmt.Errorf("非集群节点")
 	}
 
-	s.logger.Debugf("添加%s 读写流", strconv.FormatUint(msg.From, 16))
+	s.logger.Debugf("添加 %s 读写流", strconv.FormatUint(msg.From, 16))
 	if p.SetStream(stream) {
 		p.Recv()
 	}
 	return nil
 }
 
-func (s *RaftServer) put(key, value []byte) {
+// 添加键值对
+func (s *RaftServer) put(key, value []byte) error {
 	s.metric <- pb.MessageType_PROPOSE
-	s.node.Propose([]*pb.LogEntry{{Data: raft.Encode(key, value)}})
+
+	data := s.encoding.EncodeLogEntryData(s.encoding.DefaultPrefix(key), value)
+	// if err != nil {
+	// 	s.logger.Errorf("序列化键值 key: %s ,value: %s 对失败: %v", string(key), string(value), err)
+	// 	return err
+	// }
+	s.node.Propose([]*pb.LogEntry{{Data: data}})
+	return nil
 }
 
+// 变更成员
 func (s *RaftServer) changeMember(peers map[string]string, changeType pb.MemberChangeType) error {
-	changes := make([]*pb.MemberChange, 0, len(peers))
 
+	changes := make([]*pb.MemberChange, 0, len(peers))
 	for name, address := range peers {
 		id := GenerateNodeId(name)
 		change := &pb.MemberChange{
@@ -90,17 +101,11 @@ func (s *RaftServer) changeMember(peers map[string]string, changeType pb.MemberC
 		changes = append(changes, change)
 	}
 
-	changeCol := &pb.MemberChangeCollection{Changes: changes}
-
-	data, err := proto.Marshal(changeCol)
-	if err != nil {
-		s.logger.Errorf("序列化变更成员信息失败: %v", err)
-		return err
-	}
-	s.node.Propose([]*pb.LogEntry{{Type: pb.EntryType_MEMBER_CHNAGE, Data: data}})
+	s.node.ChangeMember(changes)
 	return nil
 }
 
+// 通过双向流发送消息
 func (s *RaftServer) sendMsg(msgs []*pb.RaftMessage) {
 	msgMap := make(map[uint64][]*pb.RaftMessage, len(s.peers)-1)
 
@@ -122,15 +127,37 @@ func (s *RaftServer) sendMsg(msgs []*pb.RaftMessage) {
 	}
 }
 
+// 执行成员变更,两阶段变更，阶段1 同时存在新旧集群，阶段2 清除旧集群
 func (s *RaftServer) applyChange(changes []*pb.MemberChange) {
-	s.node.ChangeMember(changes)
-	if len(changes) > 0 {
+	changeCount := len(changes)
+	diffCount := 0
+	for _, mc := range changes {
+		p := s.peers[mc.Id]
+		if mc.Type == pb.MemberChangeType_ADD_NODE {
+			if (p == nil && s.id != mc.Id) || (p != nil && p.remote.address != mc.Address) {
+				diffCount++
+			}
+		} else if mc.Type == pb.MemberChangeType_REMOVE_NODE {
+			if p != nil || s.id == mc.Id {
+				diffCount++
+			}
+		}
+	}
+	if diffCount == 0 && changeCount > 0 {
+		return
+	}
+
+	s.node.ApplyChange(changes)
+	if changeCount > 0 {
 		for _, mc := range changes {
 			if mc.Type == pb.MemberChangeType_ADD_NODE {
 				if mc.Id != s.id {
-					peer := NewPeer(mc.Id, mc.Address, s.node, s.metric, s.logger)
-					s.peers[mc.Id] = peer
-					peer.Start()
+					_, exsit := s.peers[mc.Id]
+					if !exsit {
+						peer := NewPeer(mc.Id, mc.Address, s.node, s.metric, s.logger)
+						s.peers[mc.Id] = peer
+						peer.Start()
+					}
 				}
 			} else {
 				if mc.Id != s.id {
@@ -139,9 +166,6 @@ func (s *RaftServer) applyChange(changes []*pb.MemberChange) {
 					s.close = true
 				}
 			}
-		}
-		if s.node.IsLeader() {
-			s.node.Propose([]*pb.LogEntry{{Type: pb.EntryType_MEMBER_CHNAGE}})
 		}
 	} else {
 		for k, p := range s.peers {
@@ -156,6 +180,7 @@ func (s *RaftServer) applyChange(changes []*pb.MemberChange) {
 	}
 }
 
+// 处理消息发送、成员变更
 func (s *RaftServer) handle() {
 	go func() {
 		for {
@@ -164,13 +189,14 @@ func (s *RaftServer) handle() {
 				return
 			case msgs := <-s.node.Poll():
 				s.sendMsg(msgs)
-			case changes := <-s.node.Notify():
-				s.applyChange(changes)
+			case changes := <-s.node.ChangeNotify():
+				go s.applyChange(changes)
 			}
 		}
 	}()
 }
 
+// 停止服务
 func (s *RaftServer) Stop() {
 
 	s.logger.Infof("关闭服务")
@@ -196,16 +222,17 @@ func (s *RaftServer) Stop() {
 
 }
 
+// 启动服务
 func (s *RaftServer) Start() {
 
 	lis, err := net.Listen("tcp", s.peerAddress)
 	if err != nil {
-		s.logger.Errorf("启动Raft内部服务器失败: %v", err)
+		s.logger.Errorf("对等节点服务器失败: %v", err)
 	}
 	var opts []grpc.ServerOption
 	s.raftServer = grpc.NewServer(opts...)
 
-	s.logger.Infof("Raft内部服务器启动成功 %s", s.peerAddress)
+	s.logger.Infof("对等节点服务器启动成功 %s", s.peerAddress)
 
 	pb.RegisterRaftServer(s.raftServer, s)
 
@@ -227,6 +254,7 @@ func (s *RaftServer) Start() {
 	}
 }
 
+// 显示监控信息
 func (s *RaftServer) showMetrics() {
 
 	appEntryCount := 0

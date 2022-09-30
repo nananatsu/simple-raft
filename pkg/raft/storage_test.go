@@ -12,9 +12,9 @@ func TestGetSnapshotSegment(t *testing.T) {
 	logger := utils.GetLogger(dir)
 	sugar := logger.Sugar()
 
-	s := NewRaftStorage(dir, sugar)
+	s := NewRaftStorage(dir, &SimpleEncoding{}, sugar)
 
-	snapc, err := s.getSnapshot(3)
+	snapc, err := s.GetSnapshot(3)
 
 	if err != nil {
 		sugar.Errorf(err.Error())
@@ -38,9 +38,9 @@ func TestInstallSnapshotSegment(t *testing.T) {
 	logger := utils.GetLogger(dir)
 	sugar := logger.Sugar()
 
-	s := NewRaftStorage(dir, sugar)
+	s := NewRaftStorage(dir, &SimpleEncoding{}, sugar)
 
-	snapc, err := s.getSnapshot(3)
+	snapc, err := s.GetSnapshot(3)
 
 	if err != nil {
 		sugar.Errorf(err.Error())
@@ -56,4 +56,22 @@ func TestInstallSnapshotSegment(t *testing.T) {
 		}
 	}
 
+}
+
+func TestRestoreMember(t *testing.T) {
+
+	dir := "../../build/sst"
+
+	logger := utils.GetLogger(dir)
+	sugar := logger.Sugar()
+
+	s := NewRaftStorage(dir, &SimpleEncoding{}, sugar)
+
+	member, err := s.RestoreMember()
+
+	if err != nil {
+		sugar.Errorf(err.Error())
+	}
+
+	sugar.Infof("集群成员 : %v", member)
 }

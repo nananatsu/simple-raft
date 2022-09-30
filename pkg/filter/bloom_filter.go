@@ -7,10 +7,12 @@ type BloomFilter struct {
 	hashKeys   []uint32
 }
 
+// 添加键到过滤器
 func (b *BloomFilter) Add(key []byte) {
 	b.hashKeys = append(b.hashKeys, utils.Hash(key, 0xa1b2c3d4))
 }
 
+// 通过双重hash生成布隆过滤器位数组
 func (b *BloomFilter) Hash() []byte {
 
 	n := len(b.hashKeys)
@@ -48,6 +50,7 @@ func (b *BloomFilter) Hash() []byte {
 	return dest
 }
 
+// 计算布隆过滤器位数组长度
 func (b *BloomFilter) Size() int {
 	n := len(b.hashKeys)
 	k := uint8(b.bitsPerKey * 69 / (100 * n))
@@ -60,21 +63,23 @@ func (b *BloomFilter) Size() int {
 	return int(n * b.bitsPerKey)
 }
 
+// 过滤器键长度
 func (b *BloomFilter) KeyLen() int {
 	return len(b.hashKeys)
 }
 
+// 充值过滤器
 func (b *BloomFilter) Reset() {
 	b.hashKeys = b.hashKeys[:0]
 }
 
 func NewBloomFilter(bitsPerKey int) *BloomFilter {
-
 	return &BloomFilter{
 		bitsPerKey: bitsPerKey,
 	}
 }
 
+// 检查指定布隆过滤器位数组中键是否存在
 func Contains(filter, key []byte) bool {
 
 	nBytes := len(filter) - 1

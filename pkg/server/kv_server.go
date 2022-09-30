@@ -30,7 +30,11 @@ func (s *RaftServer) Put(ctx context.Context, req *clientpb.PutRequest) (*client
 
 	// s.logger.Debugf("收到消息 %s ,%s", req.Key, req.Value)
 
-	s.put([]byte(req.Key), []byte(req.Value))
+	err := s.put([]byte(req.Key), []byte(req.Value))
+
+	if err != nil {
+		return &clientpb.Response{Success: false}, err
+	}
 
 	return &clientpb.Response{Success: true}, nil
 }
@@ -58,12 +62,12 @@ func (s *RaftServer) StartKvServer() {
 
 	lis, err := net.Listen("tcp", s.serverAddress)
 	if err != nil {
-		s.logger.Errorf("启动外部服务器失败: %v", err)
+		s.logger.Errorf("启动客户端服务器失败: %v", err)
 	}
 	var opts []grpc.ServerOption
 	s.kvServer = grpc.NewServer(opts...)
 
-	s.logger.Infof("外部服务器启动成功 %s", s.serverAddress)
+	s.logger.Infof("客户端服务器启动成功 %s", s.serverAddress)
 
 	clientpb.RegisterKvdbServer(s.kvServer, s)
 

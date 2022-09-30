@@ -15,11 +15,13 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 )
 
+// 流接口，统一grpc 客户端流、服务器流使用
 type Stream interface {
 	Send(*pb.RaftMessage) error
 	Recv() (*pb.RaftMessage, error)
 }
 
+// 远端连接信息
 type Remote struct {
 	address      string
 	conn         *grpc.ClientConn
@@ -32,18 +34,19 @@ type Peer struct {
 	mu     sync.Mutex
 	wg     sync.WaitGroup
 	id     uint64
-	node   *raft.RaftNode
-	stream Stream
-	remote *Remote
-	metric chan pb.MessageType
-	recvc  chan *pb.RaftMessage
-	propc  chan *pb.RaftMessage
-	sendc  chan *pb.RaftMessage
-	stopc  chan struct{}
-	close  bool
+	node   *raft.RaftNode       // raft节点实例
+	stream Stream               // grpc双向流
+	remote *Remote              // 远端连接信息
+	metric chan pb.MessageType  // 监控通道
+	recvc  chan *pb.RaftMessage // 接收通道
+	propc  chan *pb.RaftMessage // 提议接收通道
+	sendc  chan *pb.RaftMessage // 发送通道
+	stopc  chan struct{}        // 停止通道
+	close  bool                 // 是否准备关闭
 	logger *zap.SugaredLogger
 }
 
+// 批量发送消息到远端
 func (p *Peer) SendBatch(msgs []*pb.RaftMessage) {
 	p.wg.Add(1)
 	var appEntryMsg *pb.RaftMessage
@@ -82,6 +85,7 @@ func (p *Peer) SendBatch(msgs []*pb.RaftMessage) {
 	p.wg.Done()
 }
 
+// 通过流发送消息
 func (p *Peer) send(msg *pb.RaftMessage) {
 	if msg == nil {
 		return
@@ -100,6 +104,7 @@ func (p *Peer) send(msg *pb.RaftMessage) {
 	p.metric <- msg.MsgType
 }
 
+// 处理消息接收
 func (p *Peer) Process(msg *pb.RaftMessage) (err error) {
 	defer func() {
 		if reason := recover(); reason != nil {
@@ -117,6 +122,7 @@ func (p *Peer) Process(msg *pb.RaftMessage) (err error) {
 	return nil
 }
 
+// 开始处理
 func (p *Peer) Start() {
 
 	// 处理接收到消息
@@ -156,19 +162,20 @@ func (p *Peer) Start() {
 	}()
 }
 
+// 阻塞流读取数据
 func (p *Peer) Recv() {
 	// 接收消息
 	for {
 		msg, err := p.stream.Recv()
 		if err == io.EOF {
 			p.stream = nil
-			p.logger.Errorf("读取%s 流结束", strconv.FormatUint(p.id, 16))
+			p.logger.Errorf("读取 %s 流结束", strconv.FormatUint(p.id, 16))
 			return
 		}
 
 		if err != nil {
 			p.stream = nil
-			p.logger.Errorf("读取%s 流失败： %v", strconv.FormatUint(p.id, 16), err)
+			p.logger.Errorf("读取 %s 流失败： %v", strconv.FormatUint(p.id, 16), err)
 			return
 		}
 
@@ -179,6 +186,7 @@ func (p *Peer) Recv() {
 	}
 }
 
+// 停止
 func (p *Peer) Stop() {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -208,6 +216,7 @@ func (p *Peer) Stop() {
 	}
 }
 
+// 设置双向流，流在其他节点连入设置
 func (p *Peer) SetStream(stream pb.Raft_ConsensusServer) bool {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -228,6 +237,7 @@ func (p *Peer) SetStream(stream pb.Raft_ConsensusServer) bool {
 	return false
 }
 
+// 主动建立连接，可在断开后重连
 func (p *Peer) Reconnect() error {
 
 	if p.remote.clientStream != nil {
@@ -237,20 +247,20 @@ func (p *Peer) Reconnect() error {
 	}
 
 	stream, err := p.remote.client.Consensus(context.Background())
-	var delay time.Duration
+	// var delay time.Duration
 	for err != nil {
-		p.logger.Errorf("连接raft服务 %s失败: %v", p.remote.address, err)
-
-		delay++
-		if delay > 5 {
-			return fmt.Errorf("超过最大尝试次数10")
-		}
-		select {
-		case <-time.After(time.Second):
-			stream, err = p.remote.client.Consensus(context.Background())
-		case <-p.stopc:
-			return fmt.Errorf("任务终止")
-		}
+		p.logger.Errorf("连接raft服务 %s 失败: %v", p.remote.address, err)
+		return err
+		// delay++
+		// if delay > 5 {
+		// 	return fmt.Errorf("超过最大尝试次数10")
+		// }
+		// select {
+		// case <-time.After(time.Second):
+		// 	stream, err = p.remote.client.Consensus(context.Background())
+		// case <-p.stopc:
+		// 	return fmt.Errorf("任务终止")
+		// }
 	}
 
 	p.logger.Debugf("创建 %s 读写流", strconv.FormatUint(p.id, 16))
@@ -261,6 +271,7 @@ func (p *Peer) Reconnect() error {
 	return nil
 }
 
+// 主动连接远端
 func (p *Peer) Connect() error {
 	p.mu.Lock()
 	defer p.mu.Unlock()

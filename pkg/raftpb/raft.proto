@@ -6,6 +6,7 @@ service Raft {
   rpc consensus(stream RaftMessage) returns (stream RaftMessage) {}
 }
 
+
 enum EntryType {
   NORMAL = 0;
   MEMBER_CHNAGE = 1;

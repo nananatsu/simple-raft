@@ -48,7 +48,7 @@ func TestClusterVote(t *testing.T) {
 
 	InitServer()
 
-	<-time.After(60 * time.Second)
+	<-time.After(600 * time.Second)
 }
 
 func TestClusterPropose(t *testing.T) {
