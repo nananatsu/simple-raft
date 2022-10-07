@@ -6,7 +6,6 @@ service Raft {
   rpc consensus(stream RaftMessage) returns (stream RaftMessage) {}
 }
 
-
 enum EntryType {
   NORMAL = 0;
   MEMBER_CHNAGE = 1;
@@ -28,6 +27,8 @@ enum MessageType {
   PROPOSE_RESP = 7;
   INSTALL_SNAPSHOT = 8;
   INSTALL_SNAPSHOT_RESP = 9;
+  READINDEX = 10;
+  READINDEX_RESP = 11;
 }
 
 message LogEntry {
@@ -43,7 +44,7 @@ message MemberChange {
   string address = 3;
 }
 
-message MemberChangeCollection { repeated MemberChange changes = 1; }
+message MemberChangeCol { repeated MemberChange changes = 1; }
 
 message Snapshot {
   uint64 lastIncludeIndex = 1;
@@ -66,4 +67,5 @@ message RaftMessage {
   repeated LogEntry entry = 8;
   bool success = 9;
   Snapshot snapshot = 10;
+  bytes context = 11;
 }

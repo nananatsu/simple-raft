@@ -31,7 +31,7 @@ type Storage interface {
 	GetSnapshot(index uint64) (chan *pb.Snapshot, error)
 	GetTerm(index uint64) uint64
 	GetLastLogIndexAndTerm() (uint64, uint64)
-	Notify() chan []*pb.MemberChange
+	NotifyChan() chan []*pb.MemberChange
 	Close()
 }
 
@@ -47,7 +47,7 @@ type RaftStorage struct {
 }
 
 // 返回通知通道
-func (rs *RaftStorage) Notify() chan []*pb.MemberChange {
+func (rs *RaftStorage) NotifyChan() chan []*pb.MemberChange {
 	return rs.notifyc
 }
 
@@ -59,7 +59,7 @@ func (rs *RaftStorage) Append(entries []*pb.LogEntry) {
 		rs.logEntries.Put(logKey, logValue)
 
 		if entry.Type == pb.EntryType_MEMBER_CHNAGE {
-			var changeCol pb.MemberChangeCollection
+			var changeCol pb.MemberChangeCol
 			err := proto.Unmarshal(entry.Data, &changeCol)
 			if err != nil {
 				rs.logger.Warnf("解析成员变更日志失败: %v", err)
@@ -74,6 +74,7 @@ func (rs *RaftStorage) Append(entries []*pb.LogEntry) {
 			}
 		}
 	}
+
 	rs.MakeSnapshot(false)
 }
 
@@ -147,6 +148,16 @@ func (rs *RaftStorage) GetEntries(startIndex, endIndex uint64) []*pb.LogEntry {
 	return ret
 }
 
+func (rs *RaftStorage) GetValue(key []byte) []byte {
+
+	value := rs.logState.Get(key)
+
+	if value == nil {
+		value = rs.snap.data.Get(key)
+	}
+	return value
+}
+
 // 获取快照发送
 func (rs *RaftStorage) GetSnapshot(index uint64) (chan *pb.Snapshot, error) {
 	return rs.snap.GetSegment(index)
@@ -195,7 +206,7 @@ func (rs *RaftStorage) RestoreMember() (map[uint64]string, error) {
 	changes = append(changes, rs.logState.GetRange(start, end)...)
 
 	for _, v := range changes {
-		var changes pb.MemberChangeCollection
+		var changes pb.MemberChangeCol
 		err := proto.Unmarshal(v.Value, &changes)
 		if err != nil {
 			return memnbers, fmt.Errorf("恢复集群变更失败: %v", err)

@@ -1,9 +1,7 @@
 package client
 
 import (
-	"context"
 	"fmt"
-	pb "kvdb/pkg/clientpb"
 	"kvdb/pkg/server"
 	"kvdb/pkg/utils"
 	"math/rand"
@@ -11,9 +9,7 @@ import (
 	"time"
 )
 
-func InitServer() ([]string, []*server.RaftServer, func(string, string, string)) {
-
-	clusterNumber := 3
+func InitServer(clusterNumber int) ([]string, []*server.RaftServer, func(string, string, string)) {
 
 	connects := make([]string, clusterNumber)
 	peers := make(map[string]string, clusterNumber)
@@ -72,7 +68,7 @@ func InitServer() ([]string, []*server.RaftServer, func(string, string, string))
 
 func TestPut(t *testing.T) {
 
-	servers, _, _ := InitServer()
+	servers, _, _ := InitServer(3)
 
 	logger := utils.GetLogger("../../build/")
 	sugar := logger.Sugar()
@@ -85,7 +81,7 @@ func TestPut(t *testing.T) {
 
 func TestPut2(t *testing.T) {
 
-	servers, _, _ := InitServer()
+	servers, _, _ := InitServer(3)
 
 	logger := utils.GetLogger("../../build/")
 	sugar := logger.Sugar()
@@ -109,7 +105,7 @@ func TestPut2(t *testing.T) {
 
 func TestAddNode(t *testing.T) {
 
-	servers, _, addServer := InitServer()
+	servers, _, addServer := InitServer(3)
 
 	logger := utils.GetLogger("../../build/")
 	sugar := logger.Sugar()
@@ -133,7 +129,7 @@ func TestAddNode(t *testing.T) {
 
 func TestRemoveNode(t *testing.T) {
 
-	servers, _, addServer := InitServer()
+	servers, _, _ := InitServer(4)
 
 	logger := utils.GetLogger("../../build/")
 	sugar := logger.Sugar()
@@ -143,19 +139,9 @@ func TestRemoveNode(t *testing.T) {
 
 	name := "raft_4"
 	peerAddress := fmt.Sprintf("localhost:%d", 9123+3)
-	serverAddress := fmt.Sprintf("localhost:%d", 9223+3)
 
 	nodes := make(map[string]string)
 	nodes[name] = peerAddress
-
-	client.AddNode(nodes)
-	addServer(name, peerAddress, serverAddress)
-
-	resp, _ := client.client.Ready(context.Background(), &pb.Request{})
-	for !resp.Success {
-		time.Sleep(10 * time.Second)
-		resp, _ = client.client.Ready(context.Background(), &pb.Request{})
-	}
 
 	client.RemoveNode(nodes)
 	<-time.After(300 * time.Second)

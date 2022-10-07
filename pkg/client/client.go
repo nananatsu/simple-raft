@@ -20,10 +20,17 @@ type Client struct {
 	logger   *zap.SugaredLogger
 }
 
+func (c *Client) sendRequest(req *pb.Request) {
+
+}
+
 func (c *Client) Put(key string, value string) error {
-	resp, err := c.client.Put(context.Background(), &pb.PutRequest{
-		Key:   key,
-		Value: value,
+	kv := &pb.KvPair{Key: []byte(key), Value: []byte(value)}
+	c.reqSeq++
+	resp, err := c.client.Put(context.Background(), &pb.Request{
+		ClientId: c.clientId,
+		Seq:      c.reqSeq,
+		Cmd:      &pb.Command{OperateType: pb.Operate_PUT, Put: &pb.PutCommand{Data: []*pb.KvPair{kv}}},
 	})
 
 	if err != nil {
@@ -37,8 +44,15 @@ func (c *Client) Put(key string, value string) error {
 	}
 }
 
-func (c *Client) changeConf(change *pb.ConfigRequest) error {
-	resp, err := c.client.Change(context.Background(), change)
+func (c *Client) changeConf(change *pb.ConfigCommand) error {
+
+	req := &pb.Request{
+		ClientId: c.clientId,
+		Seq:      c.reqSeq,
+		Cmd:      &pb.Command{OperateType: pb.Operate_CONFIG, Conf: change},
+	}
+
+	resp, err := c.client.Config(context.Background(), req)
 
 	if err != nil {
 		return err
@@ -49,22 +63,14 @@ func (c *Client) changeConf(change *pb.ConfigRequest) error {
 	} else {
 		return fmt.Errorf("变更集群配置失败")
 	}
-
 }
 
 func (c *Client) AddNode(servers map[string]string) error {
-	return c.changeConf(&pb.ConfigRequest{
-		Type:    pb.ConfigType_ADD_NODE,
-		Servers: servers,
-	})
-
+	return c.changeConf(&pb.ConfigCommand{Type: pb.ConfigType_ADD_NODE, Servers: servers})
 }
 
 func (c *Client) RemoveNode(servers map[string]string) error {
-	return c.changeConf(&pb.ConfigRequest{
-		Type:    pb.ConfigType_REMOVE_NODE,
-		Servers: servers,
-	})
+	return c.changeConf(&pb.ConfigCommand{Type: pb.ConfigType_REMOVE_NODE, Servers: servers})
 }
 
 func (c *Client) reconnect(leader string) error {
@@ -90,15 +96,16 @@ func (c *Client) connect(address string) (pb.KvdbClient, error) {
 	}
 
 	client := pb.NewKvdbClient(conn)
-	resp, err := client.Leader(context.Background(), &pb.Request{ClientId: c.clientId, Seq: c.reqSeq})
-	c.reqSeq++
+
+	resp, err := client.Register(context.Background(), &pb.Auth{Token: "token"})
 
 	if err != nil {
 		conn.Close()
-		return nil, fmt.Errorf("获取集群Leader失败: %v", err)
+		return nil, fmt.Errorf("连接集群失败: %v", err)
 	}
 
 	if resp.Success {
+		c.clientId = resp.ClientId
 		return client, nil
 	} else {
 		conn.Close()
@@ -132,8 +139,7 @@ func (c *Client) Connect() {
 func NewClient(servers []string, logger *zap.SugaredLogger) *Client {
 
 	return &Client{
-		clientId: uint64(rand.Uint32())<<32 + uint64(rand.Uint32()),
-		servers:  servers,
-		logger:   logger,
+		servers: servers,
+		logger:  logger,
 	}
 }

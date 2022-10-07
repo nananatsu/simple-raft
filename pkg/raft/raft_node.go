@@ -1,6 +1,7 @@
 package raft
 
 import (
+	"context"
 	"fmt"
 	pb "kvdb/pkg/raftpb"
 	"time"
@@ -16,14 +17,15 @@ type RaftStatus struct {
 }
 
 type RaftNode struct {
-	raft    *Raft                   // raft实例
-	recvc   chan *pb.RaftMessage    // 一般消息接收通道
-	propc   chan *pb.RaftMessage    // 提议消息接收通道
-	sendc   chan []*pb.RaftMessage  // 消息发送通道
-	changec chan []*pb.MemberChange // 变更接收通道
-	stopc   chan struct{}           // 停止
-	ticker  *time.Ticker            // 定时器(选取、心跳)
-	logger  *zap.SugaredLogger
+	raft       *Raft                  // raft实例
+	recvc      chan *pb.RaftMessage   // 一般消息接收通道
+	propc      chan *pb.RaftMessage   // 提议消息接收通道
+	sendc      chan []*pb.RaftMessage // 消息发送通道
+	readIndexc chan *ReadIndexResp
+	changec    chan []*pb.MemberChange // 变更接收通道
+	stopc      chan struct{}           // 停止
+	ticker     *time.Ticker            // 定时器(选取、心跳)
+	logger     *zap.SugaredLogger
 }
 
 // 启动raft
@@ -31,14 +33,23 @@ func (n *RaftNode) Start() {
 	go func() {
 		var propc chan *pb.RaftMessage
 		var sendc chan []*pb.RaftMessage
+		var readc chan *ReadIndexResp
 		for {
 			var msgs []*pb.RaftMessage
+			var readIndex *ReadIndexResp
 			// 存在待发送消息，启用发送通道以发送
 			if len(n.raft.Msg) > 0 {
 				msgs = n.raft.Msg
 				sendc = n.sendc
 			} else { // 无消息发送隐藏发送通道
 				sendc = nil
+			}
+
+			if len(n.raft.ReadIndex) > 0 {
+				readIndex = n.raft.ReadIndex[0]
+				readc = n.readIndexc
+			} else {
+				readc = nil
 			}
 
 			// 接收/发送通道存在数据是，不处理提议
@@ -57,6 +68,8 @@ func (n *RaftNode) Start() {
 				n.raft.HandleMessage(msg)
 			case sendc <- msgs:
 				n.raft.Msg = nil
+			case readc <- readIndex:
+				n.raft.ReadIndex = n.raft.ReadIndex[1:]
 			case changes := <-n.changec:
 				n.raft.ApplyChange(changes)
 			case <-n.stopc:
@@ -66,19 +79,62 @@ func (n *RaftNode) Start() {
 	}()
 }
 
-// 处理提议
-func (n *RaftNode) HandlePropose(msg *pb.RaftMessage) {
-	n.propc <- msg
+// 处理消息
+func (n *RaftNode) Process(ctx context.Context, msg *pb.RaftMessage) error {
+	var ch chan *pb.RaftMessage
+	if msg.MsgType == pb.MessageType_PROPOSE {
+		ch = n.propc
+	} else {
+		ch = n.recvc
+	}
+
+	select {
+	case ch <- msg:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func (n *RaftNode) ReadIndex(ctx context.Context, req []byte) error {
+
+	return n.Process(ctx, &pb.RaftMessage{MsgType: pb.MessageType_READINDEX, Term: n.raft.currentTerm, Context: req})
+}
+
+func (n *RaftNode) WaitIndexApply(index uint64) {
+	ch := n.raft.raftlog.WaitIndexApply(index)
+
+	n.logger.Debugf("等待日志 %d 提交", index)
+	<-ch
 }
 
 // 提议
-func (n *RaftNode) Propose(entries []*pb.LogEntry) {
+func (n *RaftNode) Propose(ctx context.Context, entries []*pb.LogEntry) error {
 	msg := &pb.RaftMessage{
 		MsgType: pb.MessageType_PROPOSE,
 		Term:    n.raft.currentTerm,
 		Entry:   entries,
 	}
-	n.HandlePropose(msg)
+	return n.Process(ctx, msg)
+}
+
+// 变更成员提议
+func (n *RaftNode) ChangeMember(ctx context.Context, changes []*pb.MemberChange) error {
+	if n.raft.cluster.pendingChangeIndex <= n.raft.raftlog.lastAppliedIndex {
+		changeCol := &pb.MemberChangeCol{Changes: changes}
+		data, err := proto.Marshal(changeCol)
+		if err != nil {
+			n.logger.Errorf("序列化变更成员信息失败: %v", err)
+			return err
+		}
+		n.Propose(ctx, []*pb.LogEntry{{Type: pb.EntryType_MEMBER_CHNAGE, Data: data}})
+	}
+	return fmt.Errorf("上次变更未完成")
+}
+
+// 变更成员
+func (n *RaftNode) ApplyChange(changes []*pb.MemberChange) {
+	n.changec <- changes
 }
 
 // 集群首次启动时，添加成员到raft日志
@@ -92,7 +148,7 @@ func (n *RaftNode) InitMember(peers map[uint64]string) {
 		})
 	}
 
-	data, err := proto.Marshal(&pb.MemberChangeCollection{Changes: changes})
+	data, err := proto.Marshal(&pb.MemberChangeCol{Changes: changes})
 	if err != nil {
 		n.logger.Errorf("序列化集群成员配置为raft日志失败: %v", err)
 	} else {
@@ -103,45 +159,30 @@ func (n *RaftNode) InitMember(peers map[uint64]string) {
 			Index: lastIndex + 1,
 			Data:  data,
 		}
-		n.logger.Infof("存储集群成员为raft成员变更日志 %d %d", entry.Index, entry.Term)
+		// n.logger.Infof("存储集群成员为raft成员变更日志 %d %d", entry.Index, entry.Term)
 
 		n.raft.raftlog.AppendEntry([]*pb.LogEntry{entry})
 		n.raft.cluster.UpdateLogIndex(n.raft.id, entry.Index)
 	}
 }
 
-// 变更成员提议
-func (n *RaftNode) ChangeMember(changes []*pb.MemberChange) error {
-	if n.raft.cluster.pendingChangeIndex <= n.raft.raftlog.lastAppliedIndex {
-		changeCol := &pb.MemberChangeCollection{Changes: changes}
-		data, err := proto.Marshal(changeCol)
-		if err != nil {
-			n.logger.Errorf("序列化变更成员信息失败: %v", err)
-			return err
-		}
-		n.Propose([]*pb.LogEntry{{Type: pb.EntryType_MEMBER_CHNAGE, Data: data}})
-	}
-	return fmt.Errorf("上次变更未完成")
-}
-
-// 变更成员
-func (n *RaftNode) ApplyChange(changes []*pb.MemberChange) {
-	n.changec <- changes
-}
-
-// 处理消息
-func (n *RaftNode) HandleMsg(msg *pb.RaftMessage) {
-	n.recvc <- msg
+func (n *RaftNode) GetLastAppliedIndex() uint64 {
+	return n.raft.raftlog.lastAppliedIndex
 }
 
 // 返回发送通道
-func (n *RaftNode) Poll() chan []*pb.RaftMessage {
+func (n *RaftNode) SendChan() chan []*pb.RaftMessage {
 	return n.sendc
 }
 
+// 返回发送通道
+func (n *RaftNode) ReadIndexNotifyChan() chan *ReadIndexResp {
+	return n.readIndexc
+}
+
 // 返回通知通道: 成员变更通知
-func (n *RaftNode) ChangeNotify() chan []*pb.MemberChange {
-	return n.raft.raftlog.storage.Notify()
+func (n *RaftNode) MemberChangeNotifyChan() chan []*pb.MemberChange {
+	return n.raft.raftlog.storage.NotifyChan()
 }
 
 // 节点是否就绪
@@ -185,14 +226,15 @@ func (n *RaftNode) Close() {
 func NewRaftNode(id uint64, storage Storage, peers map[uint64]string, logger *zap.SugaredLogger) *RaftNode {
 
 	node := &RaftNode{
-		raft:    NewRaft(id, storage, peers, logger),
-		recvc:   make(chan *pb.RaftMessage),
-		propc:   make(chan *pb.RaftMessage),
-		sendc:   make(chan []*pb.RaftMessage),
-		changec: make(chan []*pb.MemberChange),
-		stopc:   make(chan struct{}),
-		ticker:  time.NewTicker(time.Second),
-		logger:  logger,
+		raft:       NewRaft(id, storage, peers, logger),
+		recvc:      make(chan *pb.RaftMessage),
+		propc:      make(chan *pb.RaftMessage),
+		sendc:      make(chan []*pb.RaftMessage),
+		readIndexc: make(chan *ReadIndexResp),
+		changec:    make(chan []*pb.MemberChange),
+		stopc:      make(chan struct{}),
+		ticker:     time.NewTicker(time.Second),
+		logger:     logger,
 	}
 
 	node.Start()

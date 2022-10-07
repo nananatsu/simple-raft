@@ -17,15 +17,42 @@ const (
 	VoteLost
 )
 
+type ReadIndexResp struct {
+	Req   []byte
+	Index uint64
+	Send  uint64
+	ack   map[uint64]bool
+}
+
 // raft 集群对等节点状态
 type Cluster struct {
-	incoming           map[uint64]struct{}         // 当前/新集群节点
-	outcoming          map[uint64]struct{}         // 就集群节点
-	pendingChangeIndex uint64                      // 未完成变更日志
-	inJoint            bool                        // 是否正在进行联合共识
-	voteResp           map[uint64]bool             // 投票节点
+	incoming           map[uint64]struct{} // 当前/新集群节点
+	outcoming          map[uint64]struct{} // 就集群节点
+	pendingChangeIndex uint64              // 未完成变更日志
+	inJoint            bool                // 是否正在进行联合共识
+	voteResp           map[uint64]bool     // 投票节点
+	pendingReadIndex   map[string]*ReadIndexResp
 	progress           map[uint64]*ReplicaProgress // 各节点进度
 	logger             *zap.SugaredLogger
+}
+
+func (c *Cluster) AddReadIndex(from, index uint64, req []byte) {
+
+	c.pendingReadIndex[string(req)] = &ReadIndexResp{Req: req, Send: from, Index: index, ack: map[uint64]bool{}}
+}
+
+func (c *Cluster) HeartbeatCheck(req []byte, node uint64) *ReadIndexResp {
+
+	k := string(req)
+	p := c.pendingReadIndex[k]
+	if p != nil {
+		p.ack[node] = true
+		if len(p.ack) >= len(c.progress)/2 {
+			delete(c.pendingReadIndex, k)
+			return p
+		}
+	}
+	return nil
 }
 
 // 检查选取结果
@@ -255,11 +282,12 @@ func NewCluster(peers map[uint64]string, lastIndex uint64, logger *zap.SugaredLo
 	}
 
 	return &Cluster{
-		incoming:  incoming,
-		outcoming: make(map[uint64]struct{}),
-		voteResp:  make(map[uint64]bool),
-		progress:  progress,
-		logger:    logger,
+		incoming:         incoming,
+		outcoming:        make(map[uint64]struct{}),
+		voteResp:         make(map[uint64]bool),
+		progress:         progress,
+		pendingReadIndex: make(map[string]*ReadIndexResp),
+		logger:           logger,
 	}
 
 }

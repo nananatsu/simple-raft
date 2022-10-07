@@ -6,6 +6,11 @@ import (
 	"go.uber.org/zap"
 )
 
+type WaitApply struct {
+	index uint64
+	ch    chan struct{}
+}
+
 // 单次最大发送日志条数
 const MAX_APPEND_ENTRY_SIZE = 1000
 
@@ -15,6 +20,7 @@ type RaftLog struct {
 	commitIndex      uint64         // 提交进度
 	lastAppliedIndex uint64         // 最后提交日志
 	lastAppliedTerm  uint64         // 最后提交日志任期
+	waitQueue        []*WaitApply   // 等待提交通知
 	logger           *zap.SugaredLogger
 }
 
@@ -153,6 +159,12 @@ func (l *RaftLog) RemoveConflictLog(entries []*pb.LogEntry) []*pb.LogEntry {
 	return entries[exsitIdx+1:]
 }
 
+func (l *RaftLog) WaitIndexApply(index uint64) chan struct{} {
+	ch := make(chan struct{})
+	l.waitQueue = append(l.waitQueue, &WaitApply{index: index, ch: ch})
+	return ch
+}
+
 // 提交日志
 func (l *RaftLog) Apply(lastCommit, lastLogIndex uint64) {
 	// 更新可提交索引
@@ -182,6 +194,20 @@ func (l *RaftLog) Apply(lastCommit, lastLogIndex uint64) {
 		l.lastAppliedIndex = l.logEnties[n].Index
 		l.lastAppliedTerm = l.logEnties[n].Term
 		l.logEnties = l.logEnties[n+1:]
+
+		var appliedWait int
+		for _, wa := range l.waitQueue {
+			if wa.index <= l.lastAppliedIndex {
+				wa.ch <- struct{}{}
+				close(wa.ch)
+				appliedWait++
+			} else {
+				break
+			}
+		}
+		if appliedWait > 0 {
+			l.waitQueue = l.waitQueue[appliedWait:]
+		}
 	}
 }
 

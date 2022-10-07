@@ -5,57 +5,85 @@ import (
 	"fmt"
 	"kvdb/pkg/clientpb"
 	"kvdb/pkg/raftpb"
+	"kvdb/pkg/utils"
 	"net"
 
 	"google.golang.org/grpc"
 )
 
-func (s *RaftServer) Leader(context.Context, *clientpb.Request) (*clientpb.Response, error) {
+func (s *RaftServer) Register(ctx context.Context, req *clientpb.Auth) (*clientpb.Response, error) {
+
+	var res *clientpb.Response
+
+	if s.node.IsLeader() {
+		res = &clientpb.Response{Success: true, ClientId: utils.NextId(s.id)}
+	} else {
+		res = &clientpb.Response{Success: false}
+	}
+	return res, nil
+}
+
+func (s *RaftServer) Get(ctx context.Context, req *clientpb.ReadonlyQuery) (*clientpb.Response, error) {
+	var res *clientpb.Response
+	if s.node.IsLeader() {
+		res = &clientpb.Response{Success: true}
+	} else {
+		res = &clientpb.Response{Success: false}
+	}
+
+	return res, nil
+}
+
+func (s *RaftServer) Put(ctx context.Context, req *clientpb.Request) (*clientpb.Response, error) {
 	if !s.node.Ready() {
 		return &clientpb.Response{Success: false}, fmt.Errorf("集群未就绪")
 	}
 
-	return &clientpb.Response{Success: s.node.IsLeader()}, nil
-}
+	for _, kp := range req.Cmd.Put.Data {
+		err := s.put(kp.Key, kp.Value)
 
-func (s *RaftServer) Ready(context.Context, *clientpb.Request) (*clientpb.Response, error) {
-	return &clientpb.Response{Success: s.node.Ready()}, nil
-}
+		if err != nil {
+			return &clientpb.Response{Success: false}, err
+		}
 
-func (s *RaftServer) Put(ctx context.Context, req *clientpb.PutRequest) (*clientpb.Response, error) {
-
-	if !s.node.Ready() {
-		return &clientpb.Response{Success: false}, fmt.Errorf("集群未就绪")
-	}
-
-	// s.logger.Debugf("收到消息 %s ,%s", req.Key, req.Value)
-
-	err := s.put([]byte(req.Key), []byte(req.Value))
-
-	if err != nil {
-		return &clientpb.Response{Success: false}, err
 	}
 
 	return &clientpb.Response{Success: true}, nil
 }
 
-func (s *RaftServer) Change(ctx context.Context, req *clientpb.ConfigRequest) (*clientpb.Response, error) {
+func (s *RaftServer) Delete(ctx context.Context, req *clientpb.Request) (*clientpb.Response, error) {
 
+	if !s.node.Ready() {
+		return &clientpb.Response{Success: false}, fmt.Errorf("集群未就绪")
+	}
+
+	for _, k := range req.Cmd.Del.Keys {
+		err := s.put(k, nil)
+		if err != nil {
+			return &clientpb.Response{Success: false}, err
+		}
+	}
+
+	return &clientpb.Response{Success: true}, nil
+}
+
+func (s *RaftServer) Config(ctx context.Context, req *clientpb.Request) (*clientpb.Response, error) {
 	if !s.node.Ready() {
 		return &clientpb.Response{Success: false}, fmt.Errorf("集群未就绪")
 	}
 
 	var err error
-	if req.Type == clientpb.ConfigType_ADD_NODE {
-		err = s.changeMember(req.Servers, raftpb.MemberChangeType_ADD_NODE)
+	if req.Cmd.Conf.Type == clientpb.ConfigType_ADD_NODE {
+		err = s.changeMember(req.Cmd.Conf.Servers, raftpb.MemberChangeType_ADD_NODE)
 	} else {
-		err = s.changeMember(req.Servers, raftpb.MemberChangeType_REMOVE_NODE)
+		err = s.changeMember(req.Cmd.Conf.Servers, raftpb.MemberChangeType_REMOVE_NODE)
 	}
 
 	if err != nil {
 		return &clientpb.Response{Success: false}, err
 	}
 	return &clientpb.Response{Success: true}, nil
+
 }
 
 func (s *RaftServer) StartKvServer() {

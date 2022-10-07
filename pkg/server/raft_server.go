@@ -1,11 +1,15 @@
 package server
 
 import (
+	"bytes"
+	"context"
+	"encoding/binary"
 	"fmt"
 	"io"
 	"kvdb/pkg/clientpb"
 	"kvdb/pkg/raft"
 	pb "kvdb/pkg/raftpb"
+	"kvdb/pkg/utils"
 	"net"
 	"os"
 	"path"
@@ -38,6 +42,7 @@ type RaftServer struct {
 	peers         map[uint64]*Peer
 	encoding      raft.Encoding
 	node          *raft.RaftNode
+	storage       *raft.RaftStorage
 	close         bool
 	stopc         chan struct{}
 	metric        chan pb.MessageType
@@ -69,9 +74,51 @@ func (s *RaftServer) addServerPeer(stream pb.Raft_ConsensusServer, msg *pb.RaftM
 
 	s.logger.Debugf("添加 %s 读写流", strconv.FormatUint(msg.From, 16))
 	if p.SetStream(stream) {
+		p.Process(msg)
 		p.Recv()
 	}
 	return nil
+}
+
+func (s *RaftServer) get(key []byte) ([]byte, error) {
+
+	b := make([]byte, 8)
+	reqId := utils.NextId(s.id)
+	binary.BigEndian.PutUint64(b, reqId)
+
+	idx, err := s.readIndex(b)
+	if err != nil {
+		return nil, err
+	}
+
+	if s.node.GetLastAppliedIndex() < idx {
+		s.node.WaitIndexApply(idx)
+	}
+
+	return s.storage.GetValue(s.encoding.DefaultPrefix(key)), nil
+
+}
+
+func (s *RaftServer) readIndex(req []byte) (uint64, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	err := s.node.ReadIndex(ctx, req)
+	if err != nil {
+		return 0, err
+	}
+
+	timeout := time.NewTimer(30 * time.Second)
+	for {
+		select {
+		case resp := <-s.node.ReadIndexNotifyChan():
+			if bytes.Equal(req, resp.Req) {
+				return resp.Index, nil
+			}
+		case <-timeout.C:
+			return 0, fmt.Errorf("等待readindex超时")
+		}
+	}
 }
 
 // 添加键值对
@@ -83,8 +130,10 @@ func (s *RaftServer) put(key, value []byte) error {
 	// 	s.logger.Errorf("序列化键值 key: %s ,value: %s 对失败: %v", string(key), string(value), err)
 	// 	return err
 	// }
-	s.node.Propose([]*pb.LogEntry{{Data: data}})
-	return nil
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	return s.node.Propose(ctx, []*pb.LogEntry{{Data: data}})
 }
 
 // 变更成员
@@ -101,8 +150,10 @@ func (s *RaftServer) changeMember(peers map[string]string, changeType pb.MemberC
 		changes = append(changes, change)
 	}
 
-	s.node.ChangeMember(changes)
-	return nil
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	return s.node.ChangeMember(ctx, changes)
 }
 
 // 通过双向流发送消息
@@ -147,7 +198,6 @@ func (s *RaftServer) applyChange(changes []*pb.MemberChange) {
 		return
 	}
 
-	s.node.ApplyChange(changes)
 	if changeCount > 0 {
 		for _, mc := range changes {
 			if mc.Type == pb.MemberChangeType_ADD_NODE {
@@ -156,7 +206,6 @@ func (s *RaftServer) applyChange(changes []*pb.MemberChange) {
 					if !exsit {
 						peer := NewPeer(mc.Id, mc.Address, s.node, s.metric, s.logger)
 						s.peers[mc.Id] = peer
-						peer.Start()
 					}
 				}
 			} else {
@@ -167,13 +216,18 @@ func (s *RaftServer) applyChange(changes []*pb.MemberChange) {
 				}
 			}
 		}
+		// 先启动相关连接，再更新集群信息，防止无法发送消息
+		s.node.ApplyChange(changes)
 	} else {
+		// 先更新集群信息，再关闭连接，防止消息无法处理
+		s.node.ApplyChange(changes)
 		for k, p := range s.peers {
 			if p.close {
 				delete(s.peers, k)
 				p.Stop()
 			}
 		}
+
 		if s.close {
 			s.Stop()
 		}
@@ -187,9 +241,9 @@ func (s *RaftServer) handle() {
 			select {
 			case <-s.stopc:
 				return
-			case msgs := <-s.node.Poll():
+			case msgs := <-s.node.SendChan():
 				s.sendMsg(msgs)
-			case changes := <-s.node.ChangeNotify():
+			case changes := <-s.node.MemberChangeNotifyChan():
 				go s.applyChange(changes)
 			}
 		}
@@ -239,12 +293,6 @@ func (s *RaftServer) Start() {
 	s.showMetrics()
 
 	s.handle()
-
-	for _, p := range s.peers {
-		if p != nil {
-			p.Start()
-		}
-	}
 
 	go s.StartKvServer()
 

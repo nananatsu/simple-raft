@@ -43,7 +43,7 @@ func main() {
 		log.Panicf("解析配置文件 %s 失败: %v", conf, err)
 	}
 
-	logger := utils.GetLogger("client.log")
+	logger := utils.GetLogger("client")
 	sugar := logger.Sugar()
 
 	sugar.Infof("servers: %v", config.Servers)

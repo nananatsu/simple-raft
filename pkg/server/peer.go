@@ -8,7 +8,6 @@ import (
 	pb "kvdb/pkg/raftpb"
 	"strconv"
 	"sync"
-	"time"
 
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
@@ -34,15 +33,11 @@ type Peer struct {
 	mu     sync.Mutex
 	wg     sync.WaitGroup
 	id     uint64
-	node   *raft.RaftNode       // raft节点实例
-	stream Stream               // grpc双向流
-	remote *Remote              // 远端连接信息
-	metric chan pb.MessageType  // 监控通道
-	recvc  chan *pb.RaftMessage // 接收通道
-	propc  chan *pb.RaftMessage // 提议接收通道
-	sendc  chan *pb.RaftMessage // 发送通道
-	stopc  chan struct{}        // 停止通道
-	close  bool                 // 是否准备关闭
+	node   *raft.RaftNode      // raft节点实例
+	stream Stream              // grpc双向流
+	remote *Remote             // 远端连接信息
+	metric chan pb.MessageType // 监控通道
+	close  bool                // 是否准备关闭
 	logger *zap.SugaredLogger
 }
 
@@ -71,16 +66,16 @@ func (p *Peer) SendBatch(msgs []*pb.RaftMessage) {
 				propMsg.Entry = append(propMsg.Entry, msg.Entry...)
 			}
 		} else {
-			p.sendc <- msg
+			p.send(msg)
 		}
 	}
 
 	if appEntryMsg != nil {
-		p.sendc <- appEntryMsg
+		p.send(appEntryMsg)
 	}
 
 	if propMsg != nil {
-		p.sendc <- propMsg
+		p.send(propMsg)
 	}
 	p.wg.Done()
 }
@@ -114,52 +109,7 @@ func (p *Peer) Process(msg *pb.RaftMessage) (err error) {
 
 	p.metric <- msg.MsgType
 
-	if msg.MsgType == pb.MessageType_PROPOSE {
-		p.propc <- msg
-	} else {
-		p.recvc <- msg
-	}
-	return nil
-}
-
-// 开始处理
-func (p *Peer) Start() {
-
-	// 处理接收到消息
-	go func() {
-		for {
-			select {
-			case <-p.stopc:
-				return
-			case msg := <-p.recvc:
-				p.node.HandleMsg(msg)
-			}
-		}
-	}()
-
-	// 处理接收到提议
-	go func() {
-		for {
-			select {
-			case <-p.stopc:
-				return
-			case msg := <-p.propc:
-				p.node.HandlePropose(msg)
-			}
-		}
-	}()
-
-	// 发送消息到连接另一端
-	go func() {
-		for {
-			select {
-			case <-p.stopc:
-				return
-			case msg := <-p.sendc:
-				p.send(msg)
-			}
-		}
-	}()
+	return p.node.Process(context.Background(), msg)
 }
 
 // 阻塞流读取数据
@@ -194,25 +144,12 @@ func (p *Peer) Stop() {
 	p.wg.Wait()
 	p.logger.Infof("关闭节点 %s 处理协程", strconv.FormatUint(p.id, 16))
 
-	for {
-		select {
-		case p.stopc <- struct{}{}:
-		case <-time.After(time.Second):
+	if p.remote.clientStream != nil {
+		p.remote.clientStream.CloseSend()
+	}
 
-			close(p.recvc)
-			close(p.propc)
-			close(p.sendc)
-			close(p.stopc)
-
-			if p.remote.clientStream != nil {
-				p.remote.clientStream.CloseSend()
-			}
-
-			if p.remote.conn != nil {
-				p.remote.conn.Close()
-			}
-			return
-		}
+	if p.remote.conn != nil {
+		p.remote.conn.Close()
 	}
 }
 
@@ -304,10 +241,6 @@ func NewPeer(id uint64, address string, node *raft.RaftNode, metric chan pb.Mess
 		remote: &Remote{address: address},
 		node:   node,
 		metric: metric,
-		recvc:  make(chan *pb.RaftMessage),
-		propc:  make(chan *pb.RaftMessage),
-		sendc:  make(chan *pb.RaftMessage),
-		stopc:  make(chan struct{}),
 		logger: logger,
 	}
 	return p

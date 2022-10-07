@@ -22,10 +22,11 @@ const _ = grpc.SupportPackageIsVersion7
 //
 // For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
 type KvdbClient interface {
-	Leader(ctx context.Context, in *Request, opts ...grpc.CallOption) (*Response, error)
-	Ready(ctx context.Context, in *Request, opts ...grpc.CallOption) (*Response, error)
-	Put(ctx context.Context, in *PutRequest, opts ...grpc.CallOption) (*Response, error)
-	Change(ctx context.Context, in *ConfigRequest, opts ...grpc.CallOption) (*Response, error)
+	Register(ctx context.Context, in *Auth, opts ...grpc.CallOption) (*Response, error)
+	Get(ctx context.Context, in *ReadonlyQuery, opts ...grpc.CallOption) (*Response, error)
+	Put(ctx context.Context, in *Request, opts ...grpc.CallOption) (*Response, error)
+	Delete(ctx context.Context, in *Request, opts ...grpc.CallOption) (*Response, error)
+	Config(ctx context.Context, in *Request, opts ...grpc.CallOption) (*Response, error)
 }
 
 type kvdbClient struct {
@@ -36,25 +37,25 @@ func NewKvdbClient(cc grpc.ClientConnInterface) KvdbClient {
 	return &kvdbClient{cc}
 }
 
-func (c *kvdbClient) Leader(ctx context.Context, in *Request, opts ...grpc.CallOption) (*Response, error) {
+func (c *kvdbClient) Register(ctx context.Context, in *Auth, opts ...grpc.CallOption) (*Response, error) {
 	out := new(Response)
-	err := c.cc.Invoke(ctx, "/clientpb.Kvdb/leader", in, out, opts...)
+	err := c.cc.Invoke(ctx, "/clientpb.Kvdb/register", in, out, opts...)
 	if err != nil {
 		return nil, err
 	}
 	return out, nil
 }
 
-func (c *kvdbClient) Ready(ctx context.Context, in *Request, opts ...grpc.CallOption) (*Response, error) {
+func (c *kvdbClient) Get(ctx context.Context, in *ReadonlyQuery, opts ...grpc.CallOption) (*Response, error) {
 	out := new(Response)
-	err := c.cc.Invoke(ctx, "/clientpb.Kvdb/ready", in, out, opts...)
+	err := c.cc.Invoke(ctx, "/clientpb.Kvdb/get", in, out, opts...)
 	if err != nil {
 		return nil, err
 	}
 	return out, nil
 }
 
-func (c *kvdbClient) Put(ctx context.Context, in *PutRequest, opts ...grpc.CallOption) (*Response, error) {
+func (c *kvdbClient) Put(ctx context.Context, in *Request, opts ...grpc.CallOption) (*Response, error) {
 	out := new(Response)
 	err := c.cc.Invoke(ctx, "/clientpb.Kvdb/put", in, out, opts...)
 	if err != nil {
@@ -63,9 +64,18 @@ func (c *kvdbClient) Put(ctx context.Context, in *PutRequest, opts ...grpc.CallO
 	return out, nil
 }
 
-func (c *kvdbClient) Change(ctx context.Context, in *ConfigRequest, opts ...grpc.CallOption) (*Response, error) {
+func (c *kvdbClient) Delete(ctx context.Context, in *Request, opts ...grpc.CallOption) (*Response, error) {
 	out := new(Response)
-	err := c.cc.Invoke(ctx, "/clientpb.Kvdb/change", in, out, opts...)
+	err := c.cc.Invoke(ctx, "/clientpb.Kvdb/delete", in, out, opts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *kvdbClient) Config(ctx context.Context, in *Request, opts ...grpc.CallOption) (*Response, error) {
+	out := new(Response)
+	err := c.cc.Invoke(ctx, "/clientpb.Kvdb/config", in, out, opts...)
 	if err != nil {
 		return nil, err
 	}
@@ -76,10 +86,11 @@ func (c *kvdbClient) Change(ctx context.Context, in *ConfigRequest, opts ...grpc
 // All implementations must embed UnimplementedKvdbServer
 // for forward compatibility
 type KvdbServer interface {
-	Leader(context.Context, *Request) (*Response, error)
-	Ready(context.Context, *Request) (*Response, error)
-	Put(context.Context, *PutRequest) (*Response, error)
-	Change(context.Context, *ConfigRequest) (*Response, error)
+	Register(context.Context, *Auth) (*Response, error)
+	Get(context.Context, *ReadonlyQuery) (*Response, error)
+	Put(context.Context, *Request) (*Response, error)
+	Delete(context.Context, *Request) (*Response, error)
+	Config(context.Context, *Request) (*Response, error)
 	mustEmbedUnimplementedKvdbServer()
 }
 
@@ -87,17 +98,20 @@ type KvdbServer interface {
 type UnimplementedKvdbServer struct {
 }
 
-func (UnimplementedKvdbServer) Leader(context.Context, *Request) (*Response, error) {
-	return nil, status.Errorf(codes.Unimplemented, "method Leader not implemented")
+func (UnimplementedKvdbServer) Register(context.Context, *Auth) (*Response, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method Register not implemented")
 }
-func (UnimplementedKvdbServer) Ready(context.Context, *Request) (*Response, error) {
-	return nil, status.Errorf(codes.Unimplemented, "method Ready not implemented")
+func (UnimplementedKvdbServer) Get(context.Context, *ReadonlyQuery) (*Response, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method Get not implemented")
 }
-func (UnimplementedKvdbServer) Put(context.Context, *PutRequest) (*Response, error) {
+func (UnimplementedKvdbServer) Put(context.Context, *Request) (*Response, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method Put not implemented")
 }
-func (UnimplementedKvdbServer) Change(context.Context, *ConfigRequest) (*Response, error) {
-	return nil, status.Errorf(codes.Unimplemented, "method Change not implemented")
+func (UnimplementedKvdbServer) Delete(context.Context, *Request) (*Response, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method Delete not implemented")
+}
+func (UnimplementedKvdbServer) Config(context.Context, *Request) (*Response, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method Config not implemented")
 }
 func (UnimplementedKvdbServer) mustEmbedUnimplementedKvdbServer() {}
 
@@ -112,44 +126,44 @@ func RegisterKvdbServer(s grpc.ServiceRegistrar, srv KvdbServer) {
 	s.RegisterService(&Kvdb_ServiceDesc, srv)
 }
 
-func _Kvdb_Leader_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(Request)
+func _Kvdb_Register_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(Auth)
 	if err := dec(in); err != nil {
 		return nil, err
 	}
 	if interceptor == nil {
-		return srv.(KvdbServer).Leader(ctx, in)
+		return srv.(KvdbServer).Register(ctx, in)
 	}
 	info := &grpc.UnaryServerInfo{
 		Server:     srv,
-		FullMethod: "/clientpb.Kvdb/leader",
+		FullMethod: "/clientpb.Kvdb/register",
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(KvdbServer).Leader(ctx, req.(*Request))
+		return srv.(KvdbServer).Register(ctx, req.(*Auth))
 	}
 	return interceptor(ctx, in, info, handler)
 }
 
-func _Kvdb_Ready_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(Request)
+func _Kvdb_Get_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ReadonlyQuery)
 	if err := dec(in); err != nil {
 		return nil, err
 	}
 	if interceptor == nil {
-		return srv.(KvdbServer).Ready(ctx, in)
+		return srv.(KvdbServer).Get(ctx, in)
 	}
 	info := &grpc.UnaryServerInfo{
 		Server:     srv,
-		FullMethod: "/clientpb.Kvdb/ready",
+		FullMethod: "/clientpb.Kvdb/get",
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(KvdbServer).Ready(ctx, req.(*Request))
+		return srv.(KvdbServer).Get(ctx, req.(*ReadonlyQuery))
 	}
 	return interceptor(ctx, in, info, handler)
 }
 
 func _Kvdb_Put_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(PutRequest)
+	in := new(Request)
 	if err := dec(in); err != nil {
 		return nil, err
 	}
@@ -161,25 +175,43 @@ func _Kvdb_Put_Handler(srv interface{}, ctx context.Context, dec func(interface{
 		FullMethod: "/clientpb.Kvdb/put",
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(KvdbServer).Put(ctx, req.(*PutRequest))
+		return srv.(KvdbServer).Put(ctx, req.(*Request))
 	}
 	return interceptor(ctx, in, info, handler)
 }
 
-func _Kvdb_Change_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(ConfigRequest)
+func _Kvdb_Delete_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(Request)
 	if err := dec(in); err != nil {
 		return nil, err
 	}
 	if interceptor == nil {
-		return srv.(KvdbServer).Change(ctx, in)
+		return srv.(KvdbServer).Delete(ctx, in)
 	}
 	info := &grpc.UnaryServerInfo{
 		Server:     srv,
-		FullMethod: "/clientpb.Kvdb/change",
+		FullMethod: "/clientpb.Kvdb/delete",
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(KvdbServer).Change(ctx, req.(*ConfigRequest))
+		return srv.(KvdbServer).Delete(ctx, req.(*Request))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _Kvdb_Config_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(Request)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(KvdbServer).Config(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: "/clientpb.Kvdb/config",
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(KvdbServer).Config(ctx, req.(*Request))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -192,20 +224,24 @@ var Kvdb_ServiceDesc = grpc.ServiceDesc{
 	HandlerType: (*KvdbServer)(nil),
 	Methods: []grpc.MethodDesc{
 		{
-			MethodName: "leader",
-			Handler:    _Kvdb_Leader_Handler,
+			MethodName: "register",
+			Handler:    _Kvdb_Register_Handler,
 		},
 		{
-			MethodName: "ready",
-			Handler:    _Kvdb_Ready_Handler,
+			MethodName: "get",
+			Handler:    _Kvdb_Get_Handler,
 		},
 		{
 			MethodName: "put",
 			Handler:    _Kvdb_Put_Handler,
 		},
 		{
-			MethodName: "change",
-			Handler:    _Kvdb_Change_Handler,
+			MethodName: "delete",
+			Handler:    _Kvdb_Delete_Handler,
+		},
+		{
+			MethodName: "config",
+			Handler:    _Kvdb_Config_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},
