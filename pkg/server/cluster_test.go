@@ -1,11 +1,11 @@
 package server
 
 import (
-	"encoding/binary"
 	"fmt"
 	"kvdb/pkg/raftpb"
 	"kvdb/pkg/utils"
 	"math/rand"
+	"strconv"
 	"testing"
 	"time"
 )
@@ -137,13 +137,7 @@ func TestReadIndex(t *testing.T) {
 			for {
 				time.Sleep(3 * time.Second)
 				if s.node.Ready() && s.node.IsLeader() {
-
-					b := make([]byte, 8)
-					reqId := utils.NextId(s.id)
-					binary.BigEndian.PutUint64(b, reqId)
-
-					idx, err := s.readIndex(b)
-
+					idx, err := s.readIndex()
 					s.logger.Debugf("节点最新提交 %d %v", idx, err)
 				}
 			}
@@ -160,9 +154,8 @@ func TestGet(t *testing.T) {
 		go func(s *RaftServer) {
 			for {
 				time.Sleep(3 * time.Second)
+				k := []byte("hello")
 				if s.node.Ready() && s.node.IsLeader() {
-
-					k := []byte("hello")
 					v := []byte("world")
 
 					err := s.put(k, v)
@@ -170,16 +163,19 @@ func TestGet(t *testing.T) {
 					if err != nil {
 						s.logger.Debugf("写入失败  %v", err)
 					}
+					break
+				}
 
+				if s.node.Ready() && !s.node.IsLeader() {
 					for {
 						ret, err := s.get(k)
 
-						s.logger.Debugf("查询结果 %s %v", string(ret), err)
+						s.logger.Debugf(" %s 查询结果 %s %v", strconv.FormatUint(s.id, 16), string(ret), err)
 
 						if ret != nil {
 							break
 						}
-						time.Sleep(3 * time.Second)
+						// time.Sleep(3 * time.Second)
 					}
 					break
 				}

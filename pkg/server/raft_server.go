@@ -43,6 +43,7 @@ type RaftServer struct {
 	encoding      raft.Encoding
 	node          *raft.RaftNode
 	storage       *raft.RaftStorage
+	leaderLease   int64 // leader 有效期
 	close         bool
 	stopc         chan struct{}
 	metric        chan pb.MessageType
@@ -82,24 +83,40 @@ func (s *RaftServer) addServerPeer(stream pb.Raft_ConsensusServer, msg *pb.RaftM
 
 func (s *RaftServer) get(key []byte) ([]byte, error) {
 
-	b := make([]byte, 8)
-	reqId := utils.NextId(s.id)
-	binary.BigEndian.PutUint64(b, reqId)
+	var commitIndex uint64
+	var err error
 
-	idx, err := s.readIndex(b)
+	if s.node.IsLeader() {
+		start := time.Now().UnixNano()
+		if start < s.leaderLease {
+			commitIndex = s.node.GetCommitIndex()
+		} else {
+			commitIndex, err = s.readIndex()
+			if err == nil {
+				s.leaderLease = start + int64(s.node.GetElectionTime())*1000000000
+			}
+		}
+	} else {
+		commitIndex, err = s.readIndex()
+	}
+
 	if err != nil {
 		return nil, err
 	}
 
-	if s.node.GetLastAppliedIndex() < idx {
-		s.node.WaitIndexApply(idx)
+	if s.node.GetLastAppliedIndex() < commitIndex {
+		s.node.WaitIndexApply(commitIndex)
 	}
 
 	return s.storage.GetValue(s.encoding.DefaultPrefix(key)), nil
 
 }
 
-func (s *RaftServer) readIndex(req []byte) (uint64, error) {
+func (s *RaftServer) readIndex() (uint64, error) {
+	req := make([]byte, 8)
+	reqId := utils.NextId(s.id)
+	binary.BigEndian.PutUint64(req, reqId)
+
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 

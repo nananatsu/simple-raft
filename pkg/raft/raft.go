@@ -201,10 +201,16 @@ func (r *Raft) HandleFollowerMessage(msg *pb.RaftMessage) {
 			r.electtionTick = 0
 		}
 	case pb.MessageType_READINDEX: // 询问Leader最新提交
+		r.cluster.AddReadIndex(msg.From, r.raftlog.commitIndex, msg.Context)
 		msg.To = r.leader
+		msg.From = r.id
 		r.send(msg)
 	case pb.MessageType_READINDEX_RESP:
-		break
+		r.ReadIndex = append(r.ReadIndex, &ReadIndexResp{
+			Req:   msg.Context,
+			Index: msg.LastLogIndex,
+			Send:  msg.To,
+		})
 	case pb.MessageType_HEARTBEAT:
 		r.electtionTick = 0
 		r.ReciveHeartbeat(msg.From, msg.Term, msg.LastLogIndex, msg.LastCommit, msg.Context)
@@ -230,6 +236,7 @@ func (r *Raft) HandleLeaderMessage(msg *pb.RaftMessage) {
 		r.AppendEntry(msg.Entry)
 	case pb.MessageType_READINDEX: // readindex向集群发送心跳检查是否为Leader
 		r.BroadcastHeartbeat(msg.Context)
+		r.hearbeatTick = 0
 		r.cluster.AddReadIndex(msg.From, r.raftlog.commitIndex, msg.Context)
 	case pb.MessageType_VOTE:
 		r.ReciveRequestVote(msg.Term, msg.From, msg.LastLogTerm, msg.LastLogIndex)
@@ -564,7 +571,7 @@ func (r *Raft) ReciveRequestVote(mTerm, mCandidateId, mLastLogTerm, mLastLogInde
 
 	lastLogIndex, lastLogTerm := r.raftlog.GetLastLogIndexAndTerm()
 	if r.voteFor == 0 || r.voteFor == mCandidateId {
-		if mLastLogTerm >= lastLogTerm && mLastLogIndex >= lastLogIndex {
+		if mTerm > r.currentTerm && mLastLogTerm >= lastLogTerm && mLastLogIndex >= lastLogIndex {
 			r.voteFor = mCandidateId
 			success = true
 		}

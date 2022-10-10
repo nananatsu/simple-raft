@@ -170,6 +170,10 @@ func (n *RaftNode) GetLastAppliedIndex() uint64 {
 	return n.raft.raftlog.lastAppliedIndex
 }
 
+func (n *RaftNode) GetCommitIndex() uint64 {
+	return n.raft.raftlog.commitIndex
+}
+
 // 返回发送通道
 func (n *RaftNode) SendChan() chan []*pb.RaftMessage {
 	return n.sendc
@@ -201,6 +205,10 @@ func (n *RaftNode) IsLeader() bool {
 // 获取Leader
 func (n *RaftNode) GetLeader() uint64 {
 	return n.raft.leader
+}
+
+func (n *RaftNode) GetElectionTime() int {
+	return n.raft.electionTimeout
 }
 
 // 获取当前状态
