@@ -2,11 +2,11 @@ package main
 
 import (
 	"flag"
-	"io/ioutil"
 	"kvdb/pkg/client"
 	"kvdb/pkg/utils"
 	"log"
 	"math/rand"
+	"os"
 	"strings"
 
 	"gopkg.in/yaml.v2"
@@ -31,7 +31,7 @@ func init() {
 func main() {
 
 	flag.Parse()
-	conf, err := ioutil.ReadFile(configFile)
+	conf, err := os.ReadFile(configFile)
 	if err != nil {
 		log.Panicf("读取配置文件 %s 失败: %v", conf, err)
 	}
@@ -47,7 +47,6 @@ func main() {
 	sugar := logger.Sugar()
 
 	sugar.Infof("servers: %v", config.Servers)
-
 	c := client.NewClient(config.Servers, sugar)
 
 	c.Connect()

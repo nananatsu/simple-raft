@@ -1,6 +1,8 @@
 package filter
 
-import "kvdb/pkg/utils"
+import (
+	"encoding/binary"
+)
 
 type BloomFilter struct {
 	bitsPerKey int
@@ -9,7 +11,7 @@ type BloomFilter struct {
 
 // 添加键到过滤器
 func (b *BloomFilter) Add(key []byte) {
-	b.hashKeys = append(b.hashKeys, utils.Hash(key, 0xa1b2c3d4))
+	b.hashKeys = append(b.hashKeys, MurmurHash3(key, 0xbc9f1d34))
 }
 
 // 通过双重hash生成布隆过滤器位数组
@@ -95,7 +97,7 @@ func Contains(filter, key []byte) bool {
 		return true
 	}
 
-	h := utils.Hash(key, 0xa1b2c3d4)
+	h := MurmurHash3(key, 0xbc9f1d34)
 
 	delta := (h >> 17) | (h << 15)
 	for i := uint8(0); i < k; i++ {
@@ -107,4 +109,85 @@ func Contains(filter, key []byte) bool {
 		h += delta
 	}
 	return true
+}
+
+func MurmurHash3(data []byte, seed uint32) uint32 {
+	const (
+		c1 = uint32(0xcc9e2d51)
+		c2 = uint32(0x1b873593)
+		n  = uint32(0xe6546b64)
+	)
+
+	h := seed
+	l := len(data)
+	i := 0
+
+	for i+4 < l {
+		k := binary.LittleEndian.Uint32(data[i:])
+		k *= c1
+		k = k<<15 | k>>17
+		k *= c2
+
+		h ^= k
+		h = h<<13 | h>>19
+		h = (h * 5) + n
+		i += 4
+	}
+
+	k := uint32(0)
+	switch l - i {
+	case 3:
+		k ^= uint32(data[i+2]) << 16
+		fallthrough
+	case 2:
+		k ^= uint32(data[i+1]) << 8
+		fallthrough
+	case 1:
+		k ^= uint32(data[i])
+		k *= c1
+		k = k<<15 | k>>17
+		k *= c2
+	}
+
+	h ^= uint32(l)
+	h ^= h >> 16
+	h *= 0x85ebca6b
+	h ^= h >> 13
+	h *= 0xc2b2ae35
+	h ^= h >> 16
+
+	return h
+}
+
+func LeveldbHash(data []byte, seed uint32) uint32 {
+	const (
+		m = uint32(0xc6a4a793)
+	)
+
+	l := uint32(len(data))
+	h := seed ^ (l * m)
+	i := uint32(0)
+
+	for i+4 < l {
+		k := binary.LittleEndian.Uint32(data[i:])
+
+		h += k
+		h *= m
+		h ^= (h >> 16)
+		i += 4
+	}
+
+	switch l - i {
+	case 3:
+		h += uint32(data[i+2]) << 16
+		fallthrough
+	case 2:
+		h += uint32(data[i+1]) << 8
+		fallthrough
+	case 1:
+		h += uint32(data[i])
+		h *= m
+		h ^= (h >> 24)
+	}
+	return h
 }

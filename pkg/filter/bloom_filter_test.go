@@ -2,8 +2,26 @@ package filter
 
 import (
 	"fmt"
+	"kvdb/pkg/utils"
 	"testing"
 )
+
+func BenchmarkHashMurmur3(b *testing.B) {
+	for i := 0; i < b.N; i++ {
+		for j := 0; j < 100000; j++ {
+			MurmurHash3(utils.RandStringBytesRmndr(10), 0xbc9f1d34)
+		}
+
+	}
+}
+
+func BenchmarkHashLevldb(b *testing.B) {
+	for i := 0; i < b.N; i++ {
+		for j := 0; j < 100000; j++ {
+			LeveldbHash(utils.RandStringBytesRmndr(10), 0xbc9f1d34)
+		}
+	}
+}
 
 func TestBloomFilter(t *testing.T) {
 
