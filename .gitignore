@@ -6,3 +6,7 @@
 *.log
 
 build/
+
+pkg/sql/parser/ebnf/
+
+pkg/sql/parser/yacc/
