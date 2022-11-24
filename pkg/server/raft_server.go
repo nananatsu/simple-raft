@@ -319,6 +319,10 @@ func (s *RaftServer) Start() {
 	}
 }
 
+func (s *RaftServer) Ready() bool {
+	return s.node.Ready()
+}
+
 // 显示监控信息
 func (s *RaftServer) showMetrics() {
 

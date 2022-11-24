@@ -7,6 +7,6 @@
 
 build/
 
-pkg/sql/parser/ebnf/
+pkg/sql/ebnf/
 
-pkg/sql/parser/yacc/
+pkg/sql/yacc/

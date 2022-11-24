@@ -5,6 +5,7 @@ import (
 	"kvdb/pkg/server"
 	"kvdb/pkg/utils"
 	"math/rand"
+	"sync"
 	"testing"
 	"time"
 )
@@ -60,7 +61,14 @@ func InitServer(clusterNumber int) ([]string, []*server.RaftServer, func(string,
 		}
 
 		s := server.Bootstrap(conf)
-		go s.Start()
+		s.Start()
+
+		for {
+			time.Sleep(3 * time.Second)
+			if s.Ready() {
+				break
+			}
+		}
 	}
 
 	return connects, rafts, addServer
@@ -89,6 +97,8 @@ func TestPut2(t *testing.T) {
 	client := NewClient(servers, sugar)
 	client.Connect()
 
+	var wg sync.WaitGroup
+	wg.Add(10)
 	for i := 0; i < 10; i++ {
 		go func() {
 			for i := 0; i < 1000000; i++ {
@@ -96,11 +106,11 @@ func TestPut2(t *testing.T) {
 				value := utils.RandStringBytesRmndr(20)
 				client.Put(string(key), string(value))
 			}
+			wg.Done()
 		}()
 	}
 
-	<-time.After(600 * time.Second)
-
+	wg.Wait()
 }
 
 func TestAddNode(t *testing.T) {
@@ -123,18 +133,16 @@ func TestAddNode(t *testing.T) {
 	client.AddNode(nodes)
 	addServer(name, peerAddress, serverAddress)
 
-	<-time.After(60 * time.Second)
-
 }
 
 func TestRemoveNode(t *testing.T) {
 
-	servers, _, _ := InitServer(4)
+	serverAddress, servers, _ := InitServer(4)
 
 	logger := utils.GetLogger("../../build/")
 	sugar := logger.Sugar()
 
-	client := NewClient(servers, sugar)
+	client := NewClient(serverAddress, sugar)
 	client.Connect()
 
 	name := "raft_4"
@@ -144,6 +152,11 @@ func TestRemoveNode(t *testing.T) {
 	nodes[name] = peerAddress
 
 	client.RemoveNode(nodes)
-	<-time.After(300 * time.Second)
 
+	for {
+		time.Sleep(3 * time.Second)
+		if !servers[3].Ready() {
+			break
+		}
+	}
 }
