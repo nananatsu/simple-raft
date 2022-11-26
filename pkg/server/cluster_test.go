@@ -97,6 +97,49 @@ func TestSql(t *testing.T) {
 	}
 
 	t.Logf("创建表完成")
+	<-time.After(16 * time.Second)
+}
+
+func TestSqlInsert(t *testing.T) {
+
+	_, _, leader := InitServer(3)
+
+	err := leader.ExecSql(context.Background(), `INSERT INTO user
+	(user_id, special_role, usr_biz_type, user_code, nickname, avatar, sex, division_code, detailed_address, is_enabled) VALUES
+	(1344453118192123905, 'NULL', 'User', 'dev02', '测试帐号', 'useravatar/1344453118192123905.png', 0, 'NULL', 'NULL', 1),
+	(1387292243975573506, 'NULL', 'NULL', 'llx', 'llx', 'useravatar/1382886374490771458.jpg', 0, 'NULL', 'NULL', 1),
+	(1387928161757532162, 'NULL', 'NULL', 'all', 'all', 'useravatar/1387928161757532162.png', 0, '12', '12121', 1),
+	(1538692496857780225, 'NULL', 'NULL', 'orchidaceae', '兰科', 'NULL', 1, '53', '1', 1),
+	(1538694217348698113, 'NULL', 'Admin', 'oncidium', '文心兰属', 'NULL', 1, '54', '2', 1),
+	(1538695477411401729, 'NULL', 'User', 'cattleya', '嘉德丽雅兰属', 'NULL', 1, '54', '3', 1),
+	(1538695877573169153, 'NULL', 'Admin', 'thrixspermum', '风铃兰属', 'NULL', 1, '54', '7', 1),
+	(1538696329983381506, 'NULL', 'Admin', 'acampe', '脆兰属', 'NULL', 1, '54', '6', 1),
+	(1538696715012100098, 'NULL', 'User', 'amitostigma', '雏兰属', 'NULL', 1, '54', '5', 1),
+	(1538697116184694786, 'NULL', 'User', 'dendrobium', '石斛属', 'NULL', 1, '54', '9', 1),
+	(1538697561175183362, 'NULL', 'User', 'freesia', '小苍兰', 'useravatar/1538697561175183362.jpeg', 1, '54', '日咯泽', 1),
+	(6734283068724477978, 'NULL', 'User', 'dev04', 'dev04', 'NULL', 0, 'NULL', 'NULL', 1),
+	(6734283068724477980, 'NULL', 'User', 'lhc', 'lhc', 'NULL', 0, 'NULL', 'NULL', 1);`)
+
+	if err != nil {
+		t.Error(err)
+		return
+	}
+
+	t.Logf("插入数据完成")
+
+	<-time.After(16 * time.Second)
+}
+
+func TestSqlSelect(t *testing.T) {
+
+	_, _, leader := InitServer(3)
+
+	err := leader.ExecSql(context.Background(), `SELECT * FROM user WHERE sex=1 OR sex=0 ORDER BY device_id LIMIT 0,20;`)
+
+	if err != nil {
+		t.Error(err)
+	}
+
 }
 
 func TestClusterMemberChange(t *testing.T) {

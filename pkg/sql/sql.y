@@ -3,7 +3,6 @@
 package sql
 
 import (
-    "fmt"
     "strconv"
 )
 
@@ -11,6 +10,8 @@ import (
 
 %union {
     str string
+    strList []string
+    boolean bool
     
     stmt Statment
     stmtList []Statment
@@ -23,18 +24,15 @@ import (
     columnDataType ColumnDataType
 
     selectStmt *SelectStmt
-    selectFieldList SelectFieldList
+    selectFieldList []*SelectField
     selectStmtFrom *SelectStmtFrom
-    selectStmtWhere *SelectStmtWhere
-    orderFieldList OrderFieldList
+    whereExprList []BoolExpr
+    orderFieldList []*OrderField
     selectStmtLimit *SelectStmtLimit
     compareOp CompareOp
 
     insertStmt *InsertStmt
     valueList [][]string
-
-    boolean bool
-    strList []string
 }
 
 %token <str> 
@@ -70,6 +68,7 @@ import (
     COMP_GE ">=" 
 
 %token <str> VARIABLE
+%type <str> Expr
 %type <strList> VaribleList
 
 %type <stmt> Stmt
@@ -88,7 +87,7 @@ import (
 %type <selectStmt> SelectStmt
 %type <selectFieldList> SelectFieldList   
 %type <selectStmtFrom> SelectStmtFrom
-%type <selectStmtWhere> SelectStmtWhere WhereTree
+%type <whereExprList> SelectStmtWhere WhereExprList
 %type <orderFieldList> SelectStmtOrder OrderFieldList
 %type <selectStmtLimit> SelectStmtLimit 
 %type <compareOp> CompareOp
@@ -137,7 +136,7 @@ Stmt:
 
 
 CreateStmt:
-    "CREATE" "TABLE" VARIABLE '(' TableDef ')' TableOption ';'
+    "CREATE" "TABLE" Expr '(' TableDef ')' TableOption ';'
     {
         $$ = &CreateStmt{Table: $3, Def: $5, Option: $7}
     }
@@ -184,17 +183,17 @@ TableDef:
     }
 
 ColumnDef:
-    VARIABLE ColumnDataType AllowNull DefaultValue
+    Expr ColumnDataType AllowNull DefaultValue
     {
         $$ = &ColumnDef{FieldName: $1, FieldType: $2, AllowNull: $3, Default: $4 }
     }
 
 IndexDef:
-     IndexKey VARIABLE '(' VaribleList  ')'
+     IndexKey Expr '(' VaribleList  ')'
     {
         $$ = &IndexDef{IndexName: $2, IndexField: $4}
     }
-    | "UNIQUE" IndexKey VARIABLE '(' VaribleList  ')'
+    | "UNIQUE" IndexKey Expr '(' VaribleList  ')'
     {
         $$ = &IndexDef{IndexName: $3, IndexField: $5, Unique: true}
     }
@@ -210,7 +209,7 @@ IndexKey:
     | "INDEX"
 
 ColumnDataType:
-    VARIABLE
+    Expr
     {
         t, ok := typeMapping[$1]
 
@@ -247,7 +246,7 @@ DefaultValue:
     {
          $$ = ""
     }
-    | "DEFAULT" VARIABLE
+    | "DEFAULT" Expr
     {
         $$ = $2
     }
@@ -264,11 +263,11 @@ InsertStmt:
     }
 
 InsertStmtInto:
-    VARIABLE
+    Expr
     {
         $$ = $1
     }
-    | "INTO" VARIABLE
+    | "INTO" Expr
     {
         $$ = $2
     }
@@ -316,17 +315,17 @@ SelectStmt:
     }
 
 SelectFieldList:
-    VARIABLE
+    Expr
     {
-        $$ = SelectFieldList{ &SelectField{ Field: $1 } }
+        $$ = []*SelectField{ &SelectField{ Field: $1 } }
     }
-    | SelectFieldList ',' VARIABLE
+    | SelectFieldList ',' Expr
     {
         $$ = append( $1, &SelectField{ Field: $3 } )
     }
 
 SelectStmtFrom:
-    "FROM" VARIABLE
+    "FROM" Expr
     {
         $$ = &SelectStmtFrom{
             Table: $2,
@@ -337,25 +336,45 @@ SelectStmtWhere:
     {
         $$ = nil
     }
-    | "WHERE" WhereTree
+    | "WHERE" WhereExprList
     {
         $$ = $2
     }
 
-WhereTree:
-    VARIABLE CompareOp VARIABLE
+WhereExprList:
+    Expr CompareOp Expr
     {
-        $$ = &SelectStmtWhere{ Field: &WhereField{Field:$1, Value:$3, Compare:$2} }
+        $$ = []BoolExpr{ &WhereField{Field:$1, Value:$3, Compare:$2} }
     }
-    | WhereTree OR VARIABLE CompareOp VARIABLE  %prec OR
+    | WhereExprList OR Expr CompareOp Expr  %prec OR
     {
-        $1.Or = &WhereField{Field:$3, Value:$5, Compare:$4}
-        $$ =  $1
+        $4.Negate()
+        filed := &WhereField{ Field:$3, Value:$5, Compare:$4 }
+        if len($$) == 1{
+            $$[0].Negate()
+            $$ = append($$, filed)
+            $$ = []BoolExpr{ &WhereExpr{ Negation: true, Cnf: $$ }  }
+        }else{
+            $$ = []BoolExpr{ &WhereExpr{ Negation: true, Cnf: []BoolExpr{ &WhereExpr{ Negation: true, Cnf: $$ } , filed} } }
+        }
     }
-    | WhereTree AND VARIABLE CompareOp VARIABLE %prec AND
+    | WhereExprList AND Expr CompareOp Expr %prec AND
     {
-        $1.And = &WhereField{Field:$3, Value:$5, Compare:$4}
-        $$ =  $1
+        $$ = append($$, &WhereField{ Field:$3, Value:$5, Compare:$4} )
+    }
+    | WhereExprList OR '(' WhereExprList ')' %prec OR
+    {
+        if len($$) == 1{
+            $$[0].Negate()
+            $$ = append($$, &WhereExpr{ Negation: true, Cnf: $4 })
+            $$ = []BoolExpr{ &WhereExpr{ Negation: true, Cnf: $$ }  }
+        }else{
+           $$ =[]BoolExpr{ &WhereExpr{ Negation: true, Cnf: []BoolExpr{ &WhereExpr{ Negation: true, Cnf: $$ } , &WhereExpr{ Negation: true, Cnf: $4 } } } }
+        }
+    }
+    | WhereExprList AND '(' WhereExprList ')' %prec AND
+    {
+        $$ = append($$, $4... )
     }
 
 
@@ -396,11 +415,11 @@ SelectStmtOrder:
     }
 
 OrderFieldList:
-    VARIABLE Ascend
+    Expr Ascend
     {
-        $$ = OrderFieldList{&OrderField{ Field: $1, Asc: $2 }}
+        $$ = []*OrderField{&OrderField{ Field: $1, Asc: $2 }}
     }
-    | OrderFieldList ',' VARIABLE Ascend
+    | OrderFieldList ',' Expr Ascend
     {
         $$ = append($1, &OrderField{ Field: $3, Asc: $4 })
     }
@@ -426,8 +445,8 @@ SelectStmtLimit:
     {
         size,err :=  strconv.Atoi($2)
         if err != nil{
-            fmt.Println(err)
-            return -1
+            yylex.Error(err.Error())
+            goto ret1
         }
         $$ = &SelectStmtLimit{Size: size }
     }
@@ -436,12 +455,12 @@ SelectStmtLimit:
 
         offset,err :=  strconv.Atoi($2)
         if err != nil{
-            __yyfmt__.Println(err)
+            yylex.Error(err.Error())
             goto ret1
         }
         size,err :=  strconv.Atoi($4)
         if err != nil{
-            __yyfmt__.Println(err)
+            yylex.Error(err.Error())
             goto ret1
         }
         $$ = &SelectStmtLimit{Offset: offset, Size: size }
@@ -450,25 +469,36 @@ SelectStmtLimit:
     {
         offset,err :=  strconv.Atoi($4)
         if err != nil{
-            __yyfmt__.Println(err)
+            yylex.Error(err.Error())
             goto ret1
         }
         size,err :=  strconv.Atoi($2)
         if err != nil{
-            __yyfmt__.Println(err)
+            yylex.Error(err.Error())
             goto ret1
         }
         $$ = &SelectStmtLimit{Offset: offset, Size: size }
     }
 
 VaribleList:
-    VARIABLE
+    Expr
     {
         $$ = []string{ $1 }
     }
-    | VaribleList ',' VARIABLE
+    | VaribleList ',' Expr
     {
         $$ = append($1, $3)
+    }
+
+Expr:
+    VARIABLE
+    {
+        str,err := TrimQuote($1)
+        if err != nil{
+            yylex.Error(err.Error())
+            goto ret1
+        }
+        $$ = str
     }
 
 

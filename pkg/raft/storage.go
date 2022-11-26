@@ -1,11 +1,13 @@
 package raft
 
 import (
+	"encoding/json"
 	"fmt"
 	"io/fs"
 	"kvdb/pkg/lsm"
 	pb "kvdb/pkg/raftpb"
 	"kvdb/pkg/skiplist"
+	"kvdb/pkg/sql"
 	"kvdb/pkg/utils"
 	"kvdb/pkg/wal"
 	"os"
@@ -156,6 +158,65 @@ func (rs *RaftStorage) GetValue(key []byte) []byte {
 		value = rs.snap.data.Get(key)
 	}
 	return value
+}
+
+func (rs *RaftStorage) GetRange(start, end []byte, filter []sql.BoolExpr, size int) ([][]string, error) {
+
+	ret := make([][]string, 0, size)
+	count := 0
+	kvs := rs.logState.GetRange(start, end)
+	for _, kp := range kvs {
+		var col []string
+		err := json.Unmarshal(kp.Value, &col)
+		if err != nil {
+			return nil, err
+		}
+
+		accept := true
+		for _, be := range filter {
+			accept = accept && be.Filter(&col)
+			if !accept {
+				break
+			}
+		}
+		if accept {
+			count++
+			ret = append(ret, col)
+		}
+
+		if count > size {
+			break
+		}
+	}
+
+	if count < size {
+		kvs2 := rs.snap.data.GetRange(start, end)
+
+		for _, kp := range kvs2 {
+			var col []string
+			err := json.Unmarshal(kp.Value, &col)
+			if err != nil {
+				return nil, err
+			}
+
+			accept := true
+			for _, be := range filter {
+				accept = accept && be.Filter(&col)
+				if !accept {
+					break
+				}
+			}
+			if accept {
+				count++
+				ret = append(ret, col)
+			}
+
+			if count > size {
+				break
+			}
+		}
+	}
+	return ret, nil
 }
 
 // 获取快照发送

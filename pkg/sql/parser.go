@@ -7,6 +7,7 @@ import (
 type Lexer struct {
 	sql    string
 	offset int
+	errs   []string
 }
 
 var SqlTokenMapping map[string]int
@@ -102,18 +103,42 @@ func (l *Lexer) Lex(lval *yySymType) int {
 	}
 }
 
-func (*Lexer) Error(s string) {
-	fmt.Printf("parse sql get error: %+v ", s)
+func (l *Lexer) Error(s string) {
+	l.errs = append(l.errs, s)
 }
 
 func ParseSQL(sql string) ([]Statment, error) {
 
 	var stmts []Statment
+	lex := &Lexer{sql: sql}
 
-	n := yyParse(&Lexer{sql: sql}, &stmts)
+	n := yyParse(lex, &stmts)
 
 	if n != 0 {
-		return nil, fmt.Errorf("解析sql异常 %d", n)
+		return nil, fmt.Errorf("解析sql异常 %+v", lex.errs)
 	}
 	return stmts, nil
+}
+
+func TrimQuote(str string) (string, error) {
+
+	end := len(str) - 1
+	switch str[0] {
+	case '\'':
+		if str[end] != '\'' {
+			return "", fmt.Errorf("%s 缺少单引号", str)
+		}
+		return str[1:end], nil
+	case '"':
+		if str[end] != '"' {
+			return "", fmt.Errorf("%s 缺少双引号", str)
+		}
+		return str[1:end], nil
+	case '`':
+		if str[end] != '`' {
+			return "", fmt.Errorf("%s 缺少反引号", str)
+		}
+		return str[1:end], nil
+	}
+	return str, nil
 }
