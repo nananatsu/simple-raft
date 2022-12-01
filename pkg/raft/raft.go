@@ -201,7 +201,8 @@ func (r *Raft) HandleFollowerMessage(msg *pb.RaftMessage) {
 			r.electtionTick = 0
 		}
 	case pb.MessageType_READINDEX: // 询问Leader最新提交
-		r.cluster.AddReadIndex(msg.From, r.raftlog.commitIndex, msg.Context)
+		lastLogIndex, _ := r.raftlog.GetLastLogIndexAndTerm()
+		r.cluster.AddReadIndex(msg.From, lastLogIndex, msg.Context)
 		msg.To = r.leader
 		msg.From = r.id
 		r.send(msg)
@@ -237,7 +238,9 @@ func (r *Raft) HandleLeaderMessage(msg *pb.RaftMessage) {
 	case pb.MessageType_READINDEX: // readindex向集群发送心跳检查是否为Leader
 		r.BroadcastHeartbeat(msg.Context)
 		r.hearbeatTick = 0
-		r.cluster.AddReadIndex(msg.From, r.raftlog.commitIndex, msg.Context)
+
+		lastLogIndex, _ := r.raftlog.GetLastLogIndexAndTerm()
+		r.cluster.AddReadIndex(msg.From, lastLogIndex, msg.Context)
 	case pb.MessageType_VOTE:
 		r.ReciveRequestVote(msg.Term, msg.From, msg.LastLogTerm, msg.LastLogIndex)
 	case pb.MessageType_VOTE_RESP:
@@ -270,7 +273,7 @@ func (r *Raft) AppendEntry(entries []*pb.LogEntry) {
 	r.BroadcastAppendEntries()
 }
 
-//  变更集群成员
+// 变更集群成员
 func (r *Raft) ApplyChange(change []*pb.MemberChange) error {
 	err := r.cluster.ApplyChange(change)
 	if err == nil && r.state == LEADER_STATE {
@@ -436,7 +439,6 @@ func (r *Raft) ReciveVoteResp(from, term, lastLogTerm, lastLogIndex uint64, succ
 
 // 处理日志添加响应
 func (r *Raft) ReciveAppendEntriesResult(from, term, lastLogIndex uint64, success bool) {
-
 	leaderLastLogIndex, _ := r.raftlog.GetLastLogIndexAndTerm()
 	if success {
 		r.cluster.AppendEntryResp(from, lastLogIndex)
@@ -454,6 +456,8 @@ func (r *Raft) ReciveAppendEntriesResult(from, term, lastLogIndex uint64, succes
 					r.cluster.pendingChangeIndex = lastIndex
 				}
 			}
+		} else if len(r.raftlog.waitQueue) > 0 {
+			r.raftlog.NotifyReadIndex()
 		}
 		if r.cluster.GetNextIndex(from) <= leaderLastLogIndex {
 			r.SendAppendEntries(from)

@@ -58,8 +58,24 @@ func (*SelectStmt) GetStmtType() StmtType {
 	return SELECT_STMT
 }
 
+type SqlFunctionType int
+
+const (
+	_ SqlFunctionType = iota
+	AGGREGATE_FUNCTION
+)
+
+type SqlFunction struct {
+	Type     SqlFunctionType
+	Func     string
+	Args     []interface{}
+	FieldPos []int
+}
+
 type SelectField struct {
 	Field string
+	Pos   int
+	Expr  *SqlFunction
 	Alias string
 }
 

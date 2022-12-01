@@ -77,6 +77,7 @@ func Bootstrap(conf *Config) *RaftServer {
 		encoding:      &raft.SimpleEncoding{},
 		node:          node,
 		storage:       storage,
+		cache:         make(map[string]interface{}),
 		metric:        metric,
 		stopc:         make(chan struct{}),
 	}

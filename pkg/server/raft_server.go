@@ -43,6 +43,7 @@ type RaftServer struct {
 	encoding      raft.Encoding
 	node          *raft.RaftNode
 	storage       *raft.RaftStorage
+	cache         map[string]interface{}
 	leaderLease   int64 // leader 有效期
 	close         bool
 	stopc         chan struct{}
@@ -86,60 +87,61 @@ func (s *RaftServer) get(key []byte) ([]byte, error) {
 	var commitIndex uint64
 	var err error
 
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
 	if s.node.IsLeader() {
 		start := time.Now().UnixNano()
 		if start < s.leaderLease {
-			commitIndex = s.node.GetCommitIndex()
+			commitIndex = s.node.GetLastLogIndex()
 		} else {
-			commitIndex, err = s.readIndex()
+			commitIndex, err = s.readIndex(ctx)
 			if err == nil {
 				s.leaderLease = start + int64(s.node.GetElectionTime())*1000000000
 			}
 		}
 	} else {
-		commitIndex, err = s.readIndex()
+		commitIndex, err = s.readIndex(ctx)
 	}
 
 	if err != nil {
 		return nil, err
 	}
 
-	if s.node.GetLastAppliedIndex() < commitIndex {
-		s.node.WaitIndexApply(commitIndex)
+	err = s.node.WaitIndexApply(ctx, commitIndex)
+	if err != nil {
+		return nil, err
 	}
 
 	return s.storage.GetValue(s.encoding.DefaultPrefix(key)), nil
 
 }
 
-func (s *RaftServer) readIndex() (uint64, error) {
+func (s *RaftServer) readIndex(ctx context.Context) (uint64, error) {
 	req := make([]byte, 8)
 	reqId := utils.NextId(s.id)
 	binary.BigEndian.PutUint64(req, reqId)
-
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
 
 	err := s.node.ReadIndex(ctx, req)
 	if err != nil {
 		return 0, err
 	}
 
-	timeout := time.NewTimer(30 * time.Second)
 	for {
 		select {
 		case resp := <-s.node.ReadIndexNotifyChan():
 			if bytes.Equal(req, resp.Req) {
 				return resp.Index, nil
 			}
-		case <-timeout.C:
-			return 0, fmt.Errorf("等待readindex超时")
+		case <-ctx.Done():
+			return 0, ctx.Err()
 		}
 	}
 }
 
 // 添加键值对
 func (s *RaftServer) put(key, value []byte) error {
+
 	s.metric <- pb.MessageType_PROPOSE
 
 	data := s.encoding.EncodeLogEntryData(s.encoding.DefaultPrefix(key), value)

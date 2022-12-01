@@ -313,7 +313,7 @@ func (t *Tree) compaction(level int) error {
 
 	//完成节点写入
 	size, filter, index := writer.Finish()
-	t.logger.Infof("写入: %s, 数据数: %d ", file, writeCount)
+	t.logger.Infof("写入: %s, 数据数: %d", file, writeCount)
 	// 添加到树
 	node, err := NewNode(nextLevel, seqNo, extra, file, size, filter, index, t.conf)
 	if err != nil {
@@ -491,6 +491,26 @@ func (t *Tree) GetRange(start, end []byte) []*utils.KvPair {
 	return ret
 }
 
+// 获取区间数据
+func (t *Tree) GetRangeWithFilter(start, end []byte, filter func([]byte, []byte) (bool, error)) (bool, error) {
+	//倒序取得各节点区间数据
+	for i := len(t.tree) - 1; i >= 0; i-- {
+		nodes := t.tree[i]
+		for i := len(nodes) - 1; i >= 0; i-- {
+			rangec := nodes[i].GetRange(start, end)
+			if rangec != nil {
+				for value := range rangec {
+					complete, err := filter(value.Key, value.Value)
+					if err != nil || complete {
+						return true, err
+					}
+				}
+			}
+		}
+	}
+	return false, nil
+}
+
 // 获取最小key
 func (t *Tree) GetMinKey() (key []byte) {
 
@@ -624,7 +644,6 @@ func (r *Record) Fill(source []*Node, idx int) *Record {
 
 // 添加数据到链表，返回链表头、原链表受影响数据来源下标(同名键替换)
 func (r *Record) push(key, value []byte, idx int) (*Record, int) {
-
 	h := r
 	cur := r
 	var prev *Record
@@ -649,15 +668,14 @@ func (r *Record) push(key, value []byte, idx int) (*Record, int) {
 				cur.Value = value
 				cur.Idx = idx
 				return h, old
+			} else {
+				return h, idx
 			}
-			break
 		} else if cmp < 0 { // 新增键小于当前位置键，已找到目标位置插入
 			if prev != nil {
-				prev.next = &Record{Key: key, Value: value, Idx: idx}
-				prev.next.next = cur
+				prev.next = &Record{Key: key, Value: value, Idx: idx, next: cur}
 			} else {
-				h = &Record{Key: key, Value: value, Idx: idx}
-				h.next = cur
+				h = &Record{Key: key, Value: value, Idx: idx, next: cur}
 			}
 			break
 		} else { // 新增键大于当前位置键，继续查找

@@ -76,7 +76,7 @@ func TestClusterPropose(t *testing.T) {
 func TestSql(t *testing.T) {
 
 	_, _, leader := InitServer(3)
-	err := leader.ExecSql(context.Background(), `CREATE TABLE `+"`user`"+` (
+	_, err := leader.ExecSql(context.Background(), `CREATE TABLE `+"`user`"+` (
 		`+"`user_id`"+` INT NOT NULL,
 		`+"`special_role`"+` VARCHAR DEFAULT NULL,
 		`+"`usr_biz_type`"+` VARCHAR DEFAULT NULL,
@@ -100,11 +100,60 @@ func TestSql(t *testing.T) {
 	<-time.After(16 * time.Second)
 }
 
+func BenchmarkInsert(b *testing.B) {
+
+	_, _, leader := InitServer(3)
+	_, err := leader.ExecSql(context.Background(), `CREATE TABLE `+"`user`"+` (
+		`+"`user_id`"+` INT NOT NULL,
+		`+"`special_role`"+` VARCHAR DEFAULT NULL,
+		`+"`usr_biz_type`"+` VARCHAR DEFAULT NULL,
+		`+"`user_code`"+` VARCHAR DEFAULT NULL,
+		`+"`nickname`"+` VARCHAR DEFAULT NULL,
+		`+"`avatar`"+` VARCHAR DEFAULT NULL,
+		`+"`sex`"+` INT DEFAULT NULL,
+		`+"`division_code`"+` VARCHAR DEFAULT NULL,
+		`+"`detailed_address`"+` VARCHAR DEFAULT NULL ,
+		`+"`is_enabled`"+` INT NOT NULL DEFAULT '1',
+		PRIMARY KEY (`+"`user_id`"+`),
+		UNIQUE KEY user_code_UNIQUE (`+"`user_code`"+`)
+	  );`)
+
+	if err != nil {
+		b.Error(err)
+		return
+	}
+
+	b.Logf("创建表完成")
+	// <-time.After(16 * time.Second)
+
+	for i := 0; i < 100000; i++ {
+		sqlstr := `INSERT INTO user
+		(user_id, special_role, usr_biz_type, user_code, nickname, avatar, sex, division_code, detailed_address, is_enabled) VALUES`
+		for j := 1; j <= 10; j++ {
+			endRune := ","
+			if j == 10 {
+				endRune = ";"
+			}
+			sqlstr += fmt.Sprintf("(%d, %s, %s, %s, %s, %s, %d, %s, %s, %d)%s",
+				int64(i*10+j), utils.RandStringBytesRmndr(10), utils.RandStringBytesRmndr(8), utils.RandStringBytesRmndr(8), utils.RandStringBytesRmndr(10),
+				utils.RandStringBytesRmndr(16), j%2, utils.RandStringBytesRmndr(8), utils.RandStringBytesRmndr(8), rand.Intn(10)%2, endRune)
+		}
+
+		_, err := leader.ExecSql(context.Background(), sqlstr)
+		if err != nil {
+			b.Error(err)
+			return
+		}
+	}
+
+	<-time.After(16 * time.Second)
+}
+
 func TestSqlInsert(t *testing.T) {
 
 	_, _, leader := InitServer(3)
 
-	err := leader.ExecSql(context.Background(), `INSERT INTO user
+	_, err := leader.ExecSql(context.Background(), `INSERT INTO user
 	(user_id, special_role, usr_biz_type, user_code, nickname, avatar, sex, division_code, detailed_address, is_enabled) VALUES
 	(1344453118192123905, 'NULL', 'User', 'dev02', '测试帐号', 'useravatar/1344453118192123905.png', 0, 'NULL', 'NULL', 1),
 	(1387292243975573506, 'NULL', 'NULL', 'llx', 'llx', 'useravatar/1382886374490771458.jpg', 0, 'NULL', 'NULL', 1),
@@ -134,10 +183,30 @@ func TestSqlSelect(t *testing.T) {
 
 	_, _, leader := InitServer(3)
 
-	err := leader.ExecSql(context.Background(), `SELECT * FROM user WHERE sex=1 OR sex=0 ORDER BY device_id LIMIT 0,20;`)
+	rets, err := leader.ExecSql(context.Background(), `select user_id FROM user where user_id = '12345' order BY user_id ;`)
 
 	if err != nil {
 		t.Error(err)
+	}
+
+	if rets[0].SelecResult[0][0] != "12345" {
+		t.Error("查询结果不一致")
+	}
+
+}
+
+func TestSqlSelectCount(t *testing.T) {
+
+	_, _, leader := InitServer(3)
+
+	rets, err := leader.ExecSql(context.Background(), `select COUNT(*),MAX(user_id),MIN(user_id) FROM user where sex=1 or sex=0 order BY user_id;`)
+
+	if err != nil {
+		t.Error(err)
+	}
+
+	for _, v := range rets[0].SelecResult {
+		t.Log(v)
 	}
 
 }
@@ -189,7 +258,7 @@ func TestClusterMemberChange(t *testing.T) {
 func TestReadIndex(t *testing.T) {
 	_, _, leader := InitServer(3)
 
-	idx, err := leader.readIndex()
+	idx, err := leader.readIndex(context.Background())
 	t.Logf("节点最新提交 %d %v", idx, err)
 }
 

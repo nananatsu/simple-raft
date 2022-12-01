@@ -25,6 +25,7 @@ type RaftNode struct {
 	changec    chan []*pb.MemberChange // 变更接收通道
 	stopc      chan struct{}           // 停止
 	ticker     *time.Ticker            // 定时器(选取、心跳)
+	waitQueue  []*WaitApply
 	logger     *zap.SugaredLogger
 }
 
@@ -57,6 +58,11 @@ func (n *RaftNode) Start() {
 				propc = nil
 			} else {
 				propc = n.propc
+			}
+
+			if len(n.waitQueue) > 0 {
+				n.raft.raftlog.WaitIndexApply(n.waitQueue)
+				n.waitQueue = nil
 			}
 
 			select {
@@ -101,11 +107,33 @@ func (n *RaftNode) ReadIndex(ctx context.Context, req []byte) error {
 	return n.Process(ctx, &pb.RaftMessage{MsgType: pb.MessageType_READINDEX, Term: n.raft.currentTerm, Context: req})
 }
 
-func (n *RaftNode) WaitIndexApply(index uint64) {
-	ch := n.raft.raftlog.WaitIndexApply(index)
+func (n *RaftNode) WaitIndexApply(ctx context.Context, index uint64) error {
+
+	ch := make(chan struct{})
+	wa := &WaitApply{index: index, ch: ch}
+	n.waitQueue = append(n.waitQueue, wa)
 
 	n.logger.Debugf("等待日志 %d 提交", index)
-	<-ch
+	select {
+	case <-ch:
+		return nil
+	default:
+		if n.GetLastAppliedIndex() >= index {
+			wa.done = true
+			return nil
+		}
+	}
+
+	select {
+	case <-ch:
+		return nil
+	case <-ctx.Done():
+		wa.done = true
+		if n.GetLastAppliedIndex() >= index {
+			return nil
+		}
+		return fmt.Errorf("等待日志 %d 提交: %v", index, ctx.Err())
+	}
 }
 
 // 提议
@@ -170,8 +198,8 @@ func (n *RaftNode) GetLastAppliedIndex() uint64 {
 	return n.raft.raftlog.lastAppliedIndex
 }
 
-func (n *RaftNode) GetCommitIndex() uint64 {
-	return n.raft.raftlog.commitIndex
+func (n *RaftNode) GetLastLogIndex() uint64 {
+	return n.raft.raftlog.lastAppendIndex
 }
 
 // 返回发送通道

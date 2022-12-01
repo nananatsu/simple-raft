@@ -1,7 +1,6 @@
 package raft
 
 import (
-	"encoding/json"
 	"fmt"
 	"io/fs"
 	"kvdb/pkg/lsm"
@@ -38,14 +37,16 @@ type Storage interface {
 }
 
 type RaftStorage struct {
-	encoding   Encoding                // 日志编解码
-	walw       *wal.WalWriter          // 预写日志
-	logEntries *skiplist.SkipList      // raft 日志
-	logState   *skiplist.SkipList      // kv 数据
-	snap       *Snapshot               // 快照实例
-	notifyc    chan []*pb.MemberChange // 变更提交通知通道
-	stopc      chan struct{}           // 停止通道
-	logger     *zap.SugaredLogger
+	encoding            Encoding                // 日志编解码
+	walw                *wal.WalWriter          // 预写日志
+	logEntries          *skiplist.SkipList      // raft 日志
+	logState            *skiplist.SkipList      // kv 数据
+	immutableLogEntries *skiplist.SkipList      // 上次/待写入快照 raft日志
+	immutableLogState   *skiplist.SkipList      // 上次/待写入快照 kv 数据
+	snap                *Snapshot               // 快照实例
+	notifyc             chan []*pb.MemberChange // 变更提交通知通道
+	stopc               chan struct{}           // 停止通道
+	logger              *zap.SugaredLogger
 }
 
 // 返回通知通道
@@ -91,6 +92,12 @@ func (rs *RaftStorage) MakeSnapshot(force bool) {
 		} else {
 			rs.walw = walw
 		}
+
+		rs.immutableLogEntries = rs.logEntries
+		rs.immutableLogState = rs.logState
+		rs.logEntries = skiplist.NewSkipList()
+		rs.logState = skiplist.NewSkipList()
+
 		go func(w *wal.WalWriter, logState *skiplist.SkipList, logEntries *skiplist.SkipList) {
 			k, v := logEntries.GetMax()
 			entry := rs.encoding.DecodeLogEntry(k, v)
@@ -99,9 +106,7 @@ func (rs *RaftStorage) MakeSnapshot(force bool) {
 			if oldWalw != nil {
 				oldWalw.Finish()
 			}
-		}(oldWalw, rs.logState, rs.logEntries)
-		rs.logEntries = skiplist.NewSkipList()
-		rs.logState = skiplist.NewSkipList()
+		}(oldWalw, rs.immutableLogState, rs.immutableLogEntries)
 	}
 }
 
@@ -154,69 +159,33 @@ func (rs *RaftStorage) GetValue(key []byte) []byte {
 
 	value := rs.logState.Get(key)
 
+	if value == nil && rs.immutableLogState != nil {
+		value = rs.immutableLogState.Get(key)
+	}
+
 	if value == nil {
 		value = rs.snap.data.Get(key)
 	}
 	return value
 }
 
-func (rs *RaftStorage) GetRange(start, end []byte, filter []sql.BoolExpr, size int) ([][]string, error) {
+func (rs *RaftStorage) GetRange(start, end []byte, filter func([]byte, []byte) (bool, error)) error {
 
-	ret := make([][]string, 0, size)
-	count := 0
-	kvs := rs.logState.GetRange(start, end)
-	for _, kp := range kvs {
-		var col []string
-		err := json.Unmarshal(kp.Value, &col)
-		if err != nil {
-			return nil, err
-		}
+	complete, err := rs.logState.GetRangeWithFilter(start, end, filter)
+	if err != nil || complete {
+		return err
+	}
 
-		accept := true
-		for _, be := range filter {
-			accept = accept && be.Filter(&col)
-			if !accept {
-				break
-			}
-		}
-		if accept {
-			count++
-			ret = append(ret, col)
-		}
-
-		if count > size {
-			break
+	if rs.immutableLogState != nil {
+		complete, err = rs.immutableLogState.GetRangeWithFilter(start, end, filter)
+		if err != nil || complete {
+			return err
 		}
 	}
 
-	if count < size {
-		kvs2 := rs.snap.data.GetRange(start, end)
+	_, err = rs.snap.data.GetRangeWithFilter(start, end, filter)
 
-		for _, kp := range kvs2 {
-			var col []string
-			err := json.Unmarshal(kp.Value, &col)
-			if err != nil {
-				return nil, err
-			}
-
-			accept := true
-			for _, be := range filter {
-				accept = accept && be.Filter(&col)
-				if !accept {
-					break
-				}
-			}
-			if accept {
-				count++
-				ret = append(ret, col)
-			}
-
-			if count > size {
-				break
-			}
-		}
-	}
-	return ret, nil
+	return err
 }
 
 // 获取快照发送
@@ -393,4 +362,11 @@ func NewRaftStorage(dir string, encoding Encoding, logger *zap.SugaredLogger) *R
 	s.checkFlush()
 
 	return s
+}
+
+type Calculator struct {
+	Filter []sql.BoolExpr
+	Field  []int
+	Offset int
+	Size   int
 }

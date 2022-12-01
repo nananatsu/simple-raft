@@ -7,6 +7,7 @@ import (
 )
 
 type WaitApply struct {
+	done  bool
 	index uint64
 	ch    chan struct{}
 }
@@ -20,6 +21,7 @@ type RaftLog struct {
 	commitIndex      uint64         // 提交进度
 	lastAppliedIndex uint64         // 最后提交日志
 	lastAppliedTerm  uint64         // 最后提交日志任期
+	lastAppendIndex  uint64         // 最后追加日志
 	waitQueue        []*WaitApply   // 等待提交通知
 	logger           *zap.SugaredLogger
 }
@@ -81,8 +83,8 @@ func (l *RaftLog) AppendEntry(entry []*pb.LogEntry) {
 	if size == 0 {
 		return
 	}
-
 	l.logEnties = append(l.logEnties, entry...)
+	l.lastAppendIndex = entry[size-1].Index
 }
 
 // 添加快照
@@ -90,8 +92,7 @@ func (l *RaftLog) InstallSnapshot(snap *pb.Snapshot) (bool, error) {
 
 	// 当前日志未提交,强制提交并更新快照
 	if len(l.logEnties) > 0 {
-		lastLogIndex, _ := l.GetLastLogIndexAndTerm()
-		l.Apply(lastLogIndex, lastLogIndex)
+		l.Apply(l.lastAppendIndex, l.lastAppendIndex)
 	}
 
 	// 添加快照到存储
@@ -159,10 +160,34 @@ func (l *RaftLog) RemoveConflictLog(entries []*pb.LogEntry) []*pb.LogEntry {
 	return entries[exsitIdx+1:]
 }
 
-func (l *RaftLog) WaitIndexApply(index uint64) chan struct{} {
-	ch := make(chan struct{})
-	l.waitQueue = append(l.waitQueue, &WaitApply{index: index, ch: ch})
-	return ch
+func (l *RaftLog) WaitIndexApply(was []*WaitApply) {
+	l.waitQueue = append(l.waitQueue, was...)
+}
+
+func (l *RaftLog) NotifyReadIndex() {
+
+	cur := 0
+	for _, wa := range l.waitQueue {
+		if wa.index <= l.lastAppliedIndex {
+			if wa.done {
+				close(wa.ch)
+			} else {
+				select {
+				case wa.ch <- struct{}{}:
+					close(wa.ch)
+				default:
+					close(wa.ch)
+				}
+			}
+			cur++
+		} else {
+			break
+		}
+	}
+
+	if cur > 0 {
+		l.waitQueue = l.waitQueue[cur:]
+	}
 }
 
 // 提交日志
@@ -195,19 +220,7 @@ func (l *RaftLog) Apply(lastCommit, lastLogIndex uint64) {
 		l.lastAppliedTerm = l.logEnties[n].Term
 		l.logEnties = l.logEnties[n+1:]
 
-		var appliedWait int
-		for _, wa := range l.waitQueue {
-			if wa.index <= l.lastAppliedIndex {
-				wa.ch <- struct{}{}
-				close(wa.ch)
-				appliedWait++
-			} else {
-				break
-			}
-		}
-		if appliedWait > 0 {
-			l.waitQueue = l.waitQueue[appliedWait:]
-		}
+		l.NotifyReadIndex()
 	}
 }
 
@@ -246,6 +259,7 @@ func NewRaftLog(storage Storage, logger *zap.SugaredLogger) *RaftLog {
 		commitIndex:      lastIndex,
 		lastAppliedIndex: lastIndex,
 		lastAppliedTerm:  lastTerm,
+		lastAppendIndex:  lastIndex,
 		logger:           logger,
 	}
 }

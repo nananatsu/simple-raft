@@ -87,36 +87,42 @@ func (s *RaftServer) Config(ctx context.Context, req *clientpb.Request) (*client
 
 }
 
-func (s *RaftServer) ExecSql(ctx context.Context, sqlStr string) error {
+func (s *RaftServer) ExecSql(ctx context.Context, sqlStr string) ([]*SQLResult, error) {
 
 	stmts, err := sql.ParseSQL(sqlStr)
 	if err != nil {
-		return err
+		return nil, err
 	}
+
+	rets := make([]*SQLResult, 0, len(stmts))
 
 	for _, st := range stmts {
 		switch st.GetStmtType() {
 		case sql.CREATE_STMT:
 			stmt, _ := st.(*sql.CreateStmt)
-			s.ExcuteCreate(stmt)
+			err := s.ExcuteCreate(stmt)
+			if err != nil {
+				return nil, err
+			}
 		case sql.INSERT_STMT:
 			stmt, _ := st.(*sql.InsertStmt)
-			s.ExcuteInsert(stmt)
+			err := s.ExcuteInsert(stmt)
+			if err != nil {
+				s.logger.Error(err)
+				return nil, err
+			}
 		case sql.SELECT_STMT:
 			stmt := st.(*sql.SelectStmt)
 			ret, err := s.ExecuteSelect(stmt)
 			if err != nil {
-				return err
+				return nil, err
 			}
 
-			for _, v := range ret {
-				fmt.Printf("查询结果 %v \n", v)
-			}
-
+			rets = append(rets, &SQLResult{Type: sql.SELECT_STMT, SelecResult: ret})
 		}
 	}
 
-	return nil
+	return rets, nil
 }
 
 func (s *RaftServer) StartKvServer() {

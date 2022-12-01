@@ -9,6 +9,83 @@ import (
 	"strconv"
 )
 
+type SQLExector struct {
+	keySet map[string]struct{}
+
+	selectStmt *sql.SelectStmt
+	aggregate  func([]string) []string
+
+	startOffset int
+	endOffset   int
+
+	Done   bool
+	Count  int
+	Result [][]string
+}
+
+type SQLResult struct {
+	Type        sql.StmtType
+	SelecResult [][]string
+}
+
+func (e *SQLExector) Filter(key, raw []byte) (bool, error) {
+	if e.Count < e.startOffset {
+		e.Count++
+		return false, nil
+	}
+
+	keyStr := string(key)
+	_, exist := e.keySet[keyStr]
+	if exist {
+		return false, nil
+	}
+
+	e.keySet[keyStr] = struct{}{}
+
+	var row []string
+	err := json.Unmarshal(raw, &row)
+	if err != nil {
+		return false, err
+	}
+
+	accept := true
+	for _, be := range e.selectStmt.Where {
+		accept = accept && be.Filter(&row)
+		if !accept {
+			break
+		}
+	}
+
+	if accept {
+		if e.aggregate != nil {
+			if len(e.Result) > 0 {
+				e.Result[0] = e.aggregate(row)
+			} else {
+				e.Result = [][]string{e.aggregate(row)}
+			}
+		} else {
+			resultRow := make([]string, 0, len(e.selectStmt.Filed))
+			for _, v := range e.selectStmt.Filed {
+				if v.Field != "" {
+					resultRow = append(resultRow, row[v.Pos])
+				}
+				if v.Expr != nil {
+					resultRow = append(resultRow, "## TODO")
+				}
+			}
+			e.Count++
+			e.Result = append(e.Result, resultRow)
+		}
+	}
+
+	if e.Count >= e.endOffset {
+		e.Done = true
+		return true, nil
+	}
+	return false, nil
+
+}
+
 func (s *RaftServer) ExcuteCreate(stmt *sql.CreateStmt) error {
 
 	tableMetaKey := []byte(strconv.Itoa(1) + "_meta_" + stmt.Table)
@@ -157,24 +234,132 @@ func (s *RaftServer) ExecuteSelect(stmt *sql.SelectStmt) ([][]string, error) {
 
 	start := []byte(strconv.Itoa(tableInfo.TableId) + "_")
 	end := binary.BigEndian.AppendUint64(start, uint64(math.MaxInt64))
+	var aggFuncs []*sql.SqlFunction
 
-	ret, err := s.storage.GetRange(s.encoding.DefaultPrefix(start), s.encoding.DefaultPrefix(end), stmt.Where, stmt.Limit.Size)
+	for _, sf := range stmt.Filed {
+		if sf.Field != "" {
+			idx, exist := colOrder[sf.Field]
+			if exist {
+				sf.Pos = idx
+			} else {
+				return nil, fmt.Errorf("查询列 %s 不存在", sf.Field)
+			}
+		}
 
+		if sf.Expr != nil {
+			if sf.Expr.Type == sql.AGGREGATE_FUNCTION {
+				str, ok := sf.Expr.Args[0].(string)
+				if !ok {
+					return nil, fmt.Errorf("函数 %s 参数 %+v 异常", sf.Expr.Func, sf.Expr.Args)
+				}
+
+				if sf.Expr.Func == "COUNT" && (str == "*" || str == "1") {
+					sf.Expr.FieldPos = append(sf.Expr.FieldPos, -1)
+					aggFuncs = append(aggFuncs, sf.Expr)
+					continue
+				}
+
+				idx, exist := colOrder[str]
+				if exist {
+					sf.Expr.FieldPos = append(sf.Expr.FieldPos, idx)
+					aggFuncs = append(aggFuncs, sf.Expr)
+				} else {
+					return nil, fmt.Errorf("函数 %s 参数列 %s 不存在", sf.Expr.Func, sf.Expr.Args[0])
+				}
+			}
+		}
+	}
+
+	var aggregate func(row []string) []string
+	if len(aggFuncs) > 0 {
+		if len(aggFuncs) != len(stmt.Filed) {
+			return nil, fmt.Errorf("聚合函数 %+v 不能同非聚合函数一同使用", aggFuncs)
+		}
+		totalCount := 0
+		max := math.MinInt
+		min := math.MaxInt
+		result := make([]string, len(aggFuncs))
+		aggregate = func(row []string) []string {
+			for i, sf := range aggFuncs {
+				switch sf.Func {
+				case "COUNT":
+					idx := sf.FieldPos[0]
+					if idx == -1 {
+						totalCount++
+					} else {
+						if row[idx] != "" {
+							totalCount++
+						}
+					}
+					result[i] = strconv.Itoa(totalCount)
+				case "MAX":
+					idx := sf.FieldPos[0]
+					num, err := strconv.Atoi(row[idx])
+					if err == nil {
+						if num > max {
+							max = num
+						}
+						result[i] = strconv.Itoa(max)
+					}
+				case "MIN":
+					idx := sf.FieldPos[0]
+					num, err := strconv.Atoi(row[idx])
+					if err == nil {
+						if num < min {
+							min = num
+						}
+						result[i] = strconv.Itoa(min)
+					}
+				}
+			}
+			return result
+		}
+	}
+
+	var result [][]string
+	var endOffset int
+	var startOffset int
+	if stmt.Limit != nil {
+		startOffset = stmt.Limit.Offset
+		endOffset = stmt.Limit.Offset + stmt.Limit.Size
+		result = make([][]string, 0, stmt.Limit.Size)
+	} else {
+		endOffset = math.MaxInt
+		result = make([][]string, 0)
+	}
+
+	excutor := &SQLExector{
+		keySet:      make(map[string]struct{}),
+		selectStmt:  stmt,
+		aggregate:   aggregate,
+		startOffset: startOffset,
+		endOffset:   endOffset,
+		Result:      result,
+	}
+
+	err = s.storage.GetRange(s.encoding.DefaultPrefix(start), s.encoding.DefaultPrefix(end), excutor.Filter)
 	if err != nil {
 		return nil, err
 	}
 
-	return ret, nil
+	return excutor.Result, nil
 }
 
 func (s *RaftServer) LoadMeataData(table string) (*sql.TableDef, error) {
 
 	tableMetaKey := []byte(strconv.Itoa(1) + "_meta_" + table)
+	metaCache, exist := s.cache[string(tableMetaKey)]
+	if exist {
+		tableInfo, ok := metaCache.(*sql.TableDef)
+		if ok {
+			return tableInfo, nil
+		}
+	}
+
 	meta, err := s.get(tableMetaKey)
 	if err != nil {
 		return nil, fmt.Errorf("获取表 %s 元数据失败 %v", table, err)
 	}
-
 	if meta == nil {
 		return nil, fmt.Errorf("表 %s 不存在", table)
 	}
@@ -184,6 +369,8 @@ func (s *RaftServer) LoadMeataData(table string) (*sql.TableDef, error) {
 	if err != nil {
 		return nil, fmt.Errorf("解析表 %s 元数据失败 %v", table, err)
 	}
+
+	s.cache[string(tableMetaKey)] = &tableInfo
 
 	return &tableInfo, nil
 }

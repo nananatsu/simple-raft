@@ -193,6 +193,31 @@ func (s *SkipList) GetRange(start, end []byte) []*utils.KvPair {
 	return ret
 }
 
+// 获取区间[)数据
+func (s *SkipList) GetRangeWithFilter(start, end []byte, filter func([]byte, []byte) (bool, error)) (bool, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	// 获取起始、结束位置
+	endNode, _ := s.getNode(end)
+	node, _ := s.getNode(start)
+
+	// 从起始位置遍历跳表到结束位置
+	for node != endNode {
+		keyStart := s.kvNode[node]
+		keyEnd := keyStart + s.kvNode[node+nKey]
+		valueEnd := keyEnd + s.kvNode[node+nVal]
+
+		complete, err := filter(s.kvData[keyStart:keyEnd], s.kvData[keyEnd:valueEnd])
+		if err != nil || complete {
+			return true, err
+		}
+
+		node = s.kvNode[node+nNext]
+	}
+	return false, nil
+}
+
 // 获取最小键
 func (s *SkipList) GetMin() (key, value []byte) {
 	node := s.kvNode[nNext]

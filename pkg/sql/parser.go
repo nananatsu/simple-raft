@@ -2,6 +2,7 @@ package sql
 
 import (
 	"fmt"
+	"strings"
 )
 
 type Lexer struct {
@@ -19,8 +20,9 @@ func init() {
 
 	for k, v := range yyTokenLiteralStrings {
 		SqlTokenMapping[v] = k
+		SqlTokenMapping[strings.ToLower(v)] = k
 	}
-	delete(SqlTokenMapping, "VARIABLE")
+
 	for _, v := range singleCharToken {
 		SqlTokenMapping[v] = int(int8(v[0]))
 	}
@@ -93,7 +95,7 @@ func (l *Lexer) Lex(lval *yySymType) int {
 	token := l.sql[start:end]
 	lval.str = token
 
-	fmt.Printf("token: %s \n", token)
+	// fmt.Printf("token: %s \n", token)
 
 	num, ok := SqlTokenMapping[token]
 	if ok {

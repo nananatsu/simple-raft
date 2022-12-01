@@ -76,7 +76,9 @@ func (w *SstWriter) addIndex(key []byte) {
 func (w *SstWriter) Append(key, value []byte) {
 	// 数据块数据量为0,添加分隔索引
 	if w.dataBlock.nEntries == 0 {
-		w.addIndex(key)
+		skey := make([]byte, len(key))
+		copy(skey, key)
+		w.addIndex(skey)
 	}
 
 	// 添加数据到数据块、布隆过滤器

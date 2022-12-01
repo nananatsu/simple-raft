@@ -24,6 +24,7 @@ import (
     columnDataType ColumnDataType
 
     selectStmt *SelectStmt
+    sqlFunc *SqlFunction
     selectFieldList []*SelectField
     selectStmtFrom *SelectStmtFrom
     whereExprList []BoolExpr
@@ -61,6 +62,9 @@ import (
     INTO "INTO"
     VALUE "VALUE"
     VALUES "VALUES"
+    COUNT "COUNT"
+    MAX "MAX"
+    MIN "MIN"
 
 %token <str> 
     COMP_NE "!="
@@ -85,6 +89,7 @@ import (
 %type <str> DefaultValue
 
 %type <selectStmt> SelectStmt
+%type <sqlFunc> AggregateFunction
 %type <selectFieldList> SelectFieldList   
 %type <selectStmtFrom> SelectStmtFrom
 %type <whereExprList> SelectStmtWhere WhereExprList
@@ -322,6 +327,28 @@ SelectFieldList:
     | SelectFieldList ',' Expr
     {
         $$ = append( $1, &SelectField{ Field: $3 } )
+    }
+    | AggregateFunction
+    {
+        $$ = []*SelectField{ &SelectField{ Expr: $1 }}
+    }
+    | SelectFieldList ',' AggregateFunction
+    {
+        $$ = append( $1, &SelectField{ Expr: $3 } )
+    }
+
+AggregateFunction:
+    "COUNT" '(' VARIABLE ')'
+    {
+        $$ = &SqlFunction{ Type: AGGREGATE_FUNCTION, Func: $1 , Args: []interface{}{$3} }
+    }
+    | "MAX" '(' VARIABLE ')'
+    {
+        $$ = &SqlFunction{ Type: AGGREGATE_FUNCTION, Func: $1 , Args: []interface{}{$3} }
+    }
+    | "MIN" '(' VARIABLE ')'
+    {
+        $$ = &SqlFunction{ Type: AGGREGATE_FUNCTION, Func: $1 , Args: []interface{}{$3} }
     }
 
 SelectStmtFrom:
