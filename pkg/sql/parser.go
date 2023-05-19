@@ -7,6 +7,7 @@ import (
 
 type Lexer struct {
 	sql    string
+	stmts  []Statment
 	offset int
 	errs   []string
 }
@@ -95,8 +96,6 @@ func (l *Lexer) Lex(lval *yySymType) int {
 	token := l.sql[start:end]
 	lval.str = token
 
-	// fmt.Printf("token: %s \n", token)
-
 	num, ok := SqlTokenMapping[token]
 	if ok {
 		return num
@@ -105,21 +104,27 @@ func (l *Lexer) Lex(lval *yySymType) int {
 	}
 }
 
+func (l *Lexer) Reduced(rule, state int, lval *yySymType) bool {
+	if state == 2 {
+		l.stmts = lval.stmtList
+	}
+	return false
+}
+
 func (l *Lexer) Error(s string) {
 	l.errs = append(l.errs, s)
 }
 
 func ParseSQL(sql string) ([]Statment, error) {
 
-	var stmts []Statment
 	lex := &Lexer{sql: sql}
 
-	n := yyParse(lex, &stmts)
+	n := yyParse(lex)
 
 	if n != 0 {
 		return nil, fmt.Errorf("解析sql异常 %+v", lex.errs)
 	}
-	return stmts, nil
+	return lex.stmts, nil
 }
 
 func TrimQuote(str string) (string, error) {

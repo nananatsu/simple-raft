@@ -3,7 +3,7 @@
 package sql
 
 import (
-    "strconv"
+	"strconv"
 )
 
 %}
@@ -118,11 +118,11 @@ start:
 StmtList:
     Stmt
     {
-        *stmt = append(*stmt, $1)
+        $$ = append($$, $1)
     }
     | StmtList Stmt
     {
-        *stmt = append(*stmt, $2)
+        $$ = append($$, $2)
     }
 
 Stmt:
@@ -527,5 +527,3 @@ Expr:
         }
         $$ = str
     }
-
-

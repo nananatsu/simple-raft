@@ -587,7 +587,7 @@ func yylex1(yylex yyLexer, lval *yySymType) (n int) {
 	return n
 }
 
-func yyParse(yylex yyLexer, stmt *[]Statment) int {
+func yyParse(yylex yyLexer) int {
 	const yyError = 77
 
 	yyEx, _ := yylex.(yyLexerEx)
@@ -778,11 +778,11 @@ yynewstate:
 	switch r {
 	case 2:
 		{
-			*stmt = append(*stmt, yyS[yypt-0].stmt)
+			yyVAL.stmtList = append(yyVAL.stmtList, yyS[yypt-0].stmt)
 		}
 	case 3:
 		{
-			*stmt = append(*stmt, yyS[yypt-0].stmt)
+			yyVAL.stmtList = append(yyVAL.stmtList, yyS[yypt-0].stmt)
 		}
 	case 4:
 		{
