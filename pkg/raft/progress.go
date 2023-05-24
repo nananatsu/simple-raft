@@ -100,7 +100,7 @@ func (rp *ReplicaProgress) IsPause() bool {
 	return rp.installingSnapshot || (!rp.prevResp && len(rp.pending) > 0)
 }
 
-// 更新日志发送京都
+// 更新日志发送进度
 func (rp *ReplicaProgress) ResetLogIndex(lastLogIndex uint64, leaderLastLogIndex uint64) {
 
 	// 节点最后日志小于leader最新日志按节点更新进度，否则按leader更新进度

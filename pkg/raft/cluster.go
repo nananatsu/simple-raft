@@ -240,7 +240,7 @@ func (c *Cluster) GetMacthIndex(id uint64) uint64 {
 // 检查是否提交日志
 func (c *Cluster) CheckCommit(index uint64) bool {
 
-	// 新/旧集群都达到多数共识才允许提价
+	// 新/旧集群都达到多数共识才允许提交
 	incomingLogged := 0
 	for id := range c.incoming {
 		if index <= c.progress[id].MatchIndex {

@@ -40,7 +40,7 @@ func (l *RaftLog) GetEntries(index uint64, maxSize int) []*pb.LogEntry {
 			endIndex = l.lastAppliedIndex + 1
 		}
 		return l.storage.GetEntries(index, endIndex)
-	} else { // 请求日志未提交,重数组获取
+	} else { // 请求日志未提交,从数组获取
 		var entries []*pb.LogEntry
 		for i, entry := range l.logEnties {
 			if entry.Index == index {
@@ -54,7 +54,6 @@ func (l *RaftLog) GetEntries(index uint64, maxSize int) []*pb.LogEntry {
 		}
 		return entries
 	}
-
 }
 
 // 获取日志任期
@@ -109,14 +108,46 @@ func (l *RaftLog) HasPrevLog(lastIndex, lastTerm uint64) bool {
 	if lastIndex == 0 {
 		return true
 	}
-
-	term := l.GetTerm(lastIndex)
-	b := term == lastTerm
-
-	if !b {
-		l.logger.Debugf("最新日志: %d, 任期: %d ,本地记录任期: %d", lastIndex, lastTerm, term)
+	var term uint64
+	size := len(l.logEnties)
+	if size > 0 {
+		lastlog := l.logEnties[size-1]
+		if lastlog.Index == lastIndex {
+			term = lastlog.Term
+		} else if lastlog.Index > lastIndex {
+			// 检查最后提交
+			if lastIndex == l.lastAppliedIndex { // 已提交日志必然一致
+				l.logEnties = l.logEnties[:0]
+				return true
+			} else if lastIndex > l.lastAppliedIndex {
+				// 检查未提交日志
+				for i, entry := range l.logEnties[:size] {
+					if entry.Index == lastIndex {
+						term = entry.Term
+						// 将leader上次追加后日志清理
+						// 网络异常未收到响应导致leader重发日志/leader重选举使旧leader未同步数据失效
+						l.logEnties = l.logEnties[:i+1]
+						break
+					}
+				}
+			}
+		}
+	} else if lastIndex == l.lastAppliedIndex {
+		return true
 	}
 
+	b := term == lastTerm
+	if !b {
+		l.logger.Debugf("最新日志: %d, 任期: %d ,本地记录任期: %d", lastIndex, lastTerm, term)
+		if term != 0 { // 当日志与leader不一致，删除内存中不一致数据同任期日志记录
+			for i, entry := range l.logEnties {
+				if entry.Term == term {
+					l.logEnties = l.logEnties[:i]
+					break
+				}
+			}
+		}
+	}
 	return b
 }
 

@@ -35,7 +35,7 @@ type Raft struct {
 	electtionTick         int                   // 选取时钟
 	hearbeatTick          int                   // 心跳时钟
 	Tick                  func()                // 时钟函数,Leader为心跳时钟，其他为选取时钟
-	hanbleMessage         func(*pb.RaftMessage) // 消息处理函数,按节点状态对应不通处理
+	hanbleMessage         func(*pb.RaftMessage) // 消息处理函数,按节点状态对应不同处理
 	Msg                   []*pb.RaftMessage     // 待发送消息
 	ReadIndex             []*ReadIndexResp      // 检查Leader完成的readindex
 	logger                *zap.SugaredLogger
@@ -49,8 +49,8 @@ func (r *Raft) SwitchCandidate() {
 	r.Tick = r.TickElection
 	r.hanbleMessage = r.HandleCandidateMessage
 
+	// 以节点最新日志，重置同步进度状态，leader按进度发送日志
 	lastIndex, _ := r.raftlog.GetLastLogIndexAndTerm()
-
 	r.cluster.Foreach(func(_ uint64, p *ReplicaProgress) {
 		p.NextIndex = lastIndex + 1
 		p.MatchIndex = lastIndex
@@ -159,7 +159,7 @@ func (r *Raft) HandleMessage(msg *pb.RaftMessage) {
 	} else if msg.Term > r.currentTerm {
 		// 消息非请求投票，集群发生选取，新任期产生
 		if msg.MsgType != pb.MessageType_VOTE {
-			// 日志最佳、心跳、快照为leader发出，，节点成为该leader追随者
+			// 日志追加、心跳、快照为leader发出，，节点成为该leader追随者
 			if msg.MsgType == pb.MessageType_APPEND_ENTRY || msg.MsgType == pb.MessageType_HEARTBEAT || msg.MsgType == pb.MessageType_INSTALL_SNAPSHOT {
 				r.SwitchFollower(msg.From, msg.Term)
 			} else { // 变更节点为追随者，等待leader消息
@@ -549,11 +549,11 @@ func (r *Raft) ReciveHeartbeat(mFrom, mTerm, mLastLogIndex, mLastCommit uint64, 
 func (r *Raft) ReciveAppendEntries(mLeader, mTerm, mLastLogTerm, mLastLogIndex, mLastCommit uint64, mEntries []*pb.LogEntry) {
 
 	var accept bool
-	if !r.raftlog.HasPrevLog(mLastLogIndex, mLastLogTerm) { // 检查节点是否拥有leader最后提交日志
+	if !r.raftlog.HasPrevLog(mLastLogIndex, mLastLogTerm) { // 检查节点日志是否与leader一致
 		r.logger.Infof("节点未含有上次追加日志: Index: %d, Term: %d ", mLastLogIndex, mLastLogTerm)
 		accept = false
 	} else {
-		r.raftlog.AppendEntry(r.raftlog.RemoveConflictLog(mEntries))
+		r.raftlog.AppendEntry(mEntries)
 		accept = true
 	}
 
