@@ -182,7 +182,6 @@ func (ss *Snapshot) readSnapshot(send []*SnapshotSegment, snapc chan *pb.Snapsho
 			}
 		}
 	}
-
 }
 
 // 获取最后包含日志、任期
@@ -210,7 +209,6 @@ func (ss *Snapshot) GetSegment(index uint64) (chan *pb.Snapshot, error) {
 	var find bool
 
 	// 0层文件最后包含日志完整，可单个发送
-
 	for i := len(tree[0]) - 1; i >= 0; i-- {
 		n := tree[0][i]
 

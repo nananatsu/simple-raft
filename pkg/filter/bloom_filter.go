@@ -70,7 +70,7 @@ func (b *BloomFilter) KeyLen() int {
 	return len(b.hashKeys)
 }
 
-// 充值过滤器
+// 重置过滤器
 func (b *BloomFilter) Reset() {
 	b.hashKeys = b.hashKeys[:0]
 }

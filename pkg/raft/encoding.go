@@ -52,7 +52,7 @@ func (se *SimpleEncoding) MemberPrefix(key []byte) []byte {
 	return append(prefix, key...)
 }
 
-/// 将日志索引按大端序编码字节数组,按字节排序时有序
+// 将日志索引按大端序编码字节数组,按字节排序时有序
 func (se *SimpleEncoding) EncodeIndex(index uint64) []byte {
 	b := make([]byte, 8)
 	binary.BigEndian.PutUint64(b, index)
@@ -165,7 +165,6 @@ func (pe *ProtobufEncoding) DecodeLogEntry(key, value []byte) *pb.LogEntry {
 
 // 解析raft log为原kv
 func (pe *ProtobufEncoding) DecodeLogEntries(logEntry *skiplist.SkipList) (*skiplist.SkipList, uint64, uint64) {
-
 	var index uint64
 	var term uint64
 

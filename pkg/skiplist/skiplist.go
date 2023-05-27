@@ -55,8 +55,8 @@ type SkipList struct {
 	// 0 kvData 偏移
 	// 1 key长度
 	// 2 value长度
-	// 3 链表层数
-	// 3...链表层数 下一节点
+	// 3 高度
+	// 4 ... 4+h-1 各高度下一跳位置
 	kvNode    []int
 	maxHeight int             // 最大高度
 	prevNode  [tMaxHeight]int // 上一跳位置,查询数据时回溯
@@ -95,7 +95,7 @@ func (s *SkipList) getNode(key []byte) (int, bool) {
 			return next, true
 		} else if cmp < 0 { // 当前键小于请求键,继续下一跳
 			n = next
-		} else { // 当前键大于请求键，回溯上一跳，降低高度查询
+		} else { // 当前键大于请求键，不前进到下一跳，降低高度查询
 			s.prevNode[h] = n
 			if h > 0 {
 				h--
@@ -126,6 +126,7 @@ func (s *SkipList) Put(key []byte, value []byte) {
 		s.kvSize += lenv - s.kvNode[n+nVal]
 		s.kvNode[n] = keyStart
 		s.kvNode[n+nVal] = lenv
+		return
 	}
 
 	// 生成随机高度

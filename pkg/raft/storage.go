@@ -255,13 +255,7 @@ func (rs *RaftStorage) RestoreMember() (map[uint64]string, error) {
 	return memnbers, nil
 }
 
-// 新建raft存储
-func NewRaftStorage(dir string, encoding Encoding, logger *zap.SugaredLogger) *RaftStorage {
-
-	// 保证文件夹存在
-	if _, err := os.Stat(dir); err != nil {
-		os.Mkdir(dir, os.ModePerm)
-	}
+func restoreLogEntries(dir string, encoding Encoding, snap *Snapshot, logger *zap.SugaredLogger) (*skiplist.SkipList, *wal.WalWriter) {
 
 	walDir := path.Join(dir, "wal")
 	if _, err := os.Stat(walDir); err != nil {
@@ -306,7 +300,7 @@ func NewRaftStorage(dir string, encoding Encoding, logger *zap.SugaredLogger) *R
 	}
 
 	var logEntries *skiplist.SkipList
-	var logState *skiplist.SkipList
+
 	var seq int
 	// 重新排序预写日志序号
 	wals.Sort()
@@ -320,13 +314,26 @@ func NewRaftStorage(dir string, encoding Encoding, logger *zap.SugaredLogger) *R
 		logEntries = skiplist.NewSkipList()
 	}
 
-	// 从raft日志还原实际数据
-	logState, _, _ = encoding.DecodeLogEntries(logEntries)
-
 	// 打开预写日志wal
 	w, err := wal.NewWalWriter(walDir, seq, logger)
 	if err != nil {
 		logger.Errorf("创建wal writer失败: %v", walDir, err)
+	}
+
+	// 将旧预写日志更新到快照
+	for seq, logEntry := range memLogs {
+		snap.MakeSnapshot(encoding.DecodeLogEntries(logEntry))
+		os.Remove(path.Join(walDir, strconv.Itoa(seq)+".wal"))
+	}
+
+	return logEntries, w
+}
+
+// 新建raft存储
+func NewRaftStorage(dir string, encoding Encoding, logger *zap.SugaredLogger) *RaftStorage {
+	// 保证文件夹存在
+	if _, err := os.Stat(dir); err != nil {
+		os.Mkdir(dir, os.ModePerm)
 	}
 
 	snapConf := lsm.NewConfig(path.Join(dir, "snapshot"), logger)
@@ -337,6 +344,10 @@ func NewRaftStorage(dir string, encoding Encoding, logger *zap.SugaredLogger) *R
 	if err != nil {
 		logger.Errorf("读取快照失败", err)
 	}
+
+	// 从raft日志还原实际数据
+	logEntries, w := restoreLogEntries(dir, encoding, snap, logger)
+	logState, _, _ := encoding.DecodeLogEntries(logEntries)
 
 	s := &RaftStorage{
 		walw:       w,
@@ -351,12 +362,6 @@ func NewRaftStorage(dir string, encoding Encoding, logger *zap.SugaredLogger) *R
 
 	lastIndex, lastTerm := s.GetLastLogIndexAndTerm()
 	logger.Infof("存储最后日志 %d 任期 %d ,快照最后日志 %d 任期 %d ", lastIndex, lastTerm, snap.lastIncludeIndex, snap.lastIncludeTerm)
-
-	// 将旧预写日志更新到快照
-	for seq, logEntry := range memLogs {
-		s.snap.MakeSnapshot(encoding.DecodeLogEntries(logEntry))
-		os.Remove(path.Join(walDir, strconv.Itoa(seq)+".wal"))
-	}
 
 	// 定时刷新预写日志
 	s.checkFlush()

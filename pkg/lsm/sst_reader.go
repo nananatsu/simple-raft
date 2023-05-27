@@ -71,6 +71,31 @@ func (r *SstReader) ReadFooter() error {
 	return nil
 }
 
+func (r *SstReader) readBlock(offset, size int64) ([]byte, error) {
+	if _, err := r.fd.Seek(offset, io.SeekStart); err != nil {
+		return nil, err
+	}
+	r.reader.Reset(r.fd)
+
+	compress, err := r.read(size)
+	if err != nil {
+		return nil, err
+	}
+
+	crc := binary.LittleEndian.Uint32(compress[size-4:])
+	compressData := compress[:size-4]
+
+	if utils.Checksum(compressData) != crc {
+		return nil, fmt.Errorf("数据块校验失败")
+	}
+
+	data, err := snappy.Decode(nil, compressData)
+	if err != nil {
+		return nil, err
+	}
+	return data, nil
+}
+
 // 读取过滤块
 func (r *SstReader) ReadFilter() (map[uint64][]byte, error) {
 	if r.FilterOffset == 0 {
@@ -79,24 +104,7 @@ func (r *SstReader) ReadFilter() (map[uint64][]byte, error) {
 		}
 	}
 
-	if _, err := r.fd.Seek(r.FilterOffset, io.SeekStart); err != nil {
-		return nil, err
-	}
-	r.reader.Reset(r.fd)
-
-	compress, err := r.read(r.FilterSize)
-	if err != nil {
-		return nil, err
-	}
-
-	crc := binary.LittleEndian.Uint32(compress[r.FilterSize-4:])
-	compressData := compress[:r.FilterSize-4]
-
-	if utils.Checksum(compressData) != crc {
-		return nil, fmt.Errorf("数据块校验失败")
-	}
-
-	data, err := snappy.Decode(nil, compressData)
+	data, err := r.readBlock(r.FilterOffset, r.FilterSize)
 	if err != nil {
 		return nil, err
 	}
@@ -111,23 +119,7 @@ func (r *SstReader) ReadIndex() ([]*Index, error) {
 		}
 	}
 
-	if _, err := r.fd.Seek(r.IndexOffset, io.SeekStart); err != nil {
-		return nil, err
-	}
-	r.reader.Reset(r.fd)
-
-	compress, err := r.read(r.IndexSize)
-	if err != nil {
-		return nil, err
-	}
-	crc := binary.LittleEndian.Uint32(compress[r.IndexSize-4:])
-	compressData := compress[:r.IndexSize-4]
-
-	if utils.Checksum(compressData) != crc {
-		return nil, fmt.Errorf("数据块校验失败")
-	}
-
-	data, err := snappy.Decode(nil, compressData)
+	data, err := r.readBlock(r.IndexOffset, r.IndexSize)
 	if err != nil {
 		return nil, err
 	}

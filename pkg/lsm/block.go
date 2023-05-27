@@ -55,17 +55,17 @@ func (b *Block) Append(key, value []byte) {
 func (b *Block) FlushBlockTo(dest io.Writer) (uint64, error) {
 	defer b.clear()
 
-	// 尾最后4字节记录重启点数量
-	buf4 := make([]byte, 4)
-	binary.LittleEndian.PutUint32(buf4, uint32(b.trailer.Len())/4)
-	b.trailer.Write(buf4)
-
 	n, err := dest.Write(b.compress())
 	return uint64(n), err
 }
 
 // 压缩数据
 func (b *Block) compress() []byte {
+
+	// 尾最后4字节记录重启点数量
+	buf4 := make([]byte, 4)
+	binary.LittleEndian.PutUint32(buf4, uint32(b.trailer.Len())/4)
+	b.trailer.Write(buf4)
 
 	// 将重启点数据写入记录缓冲
 	b.record.Write(b.trailer.Bytes())

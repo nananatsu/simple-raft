@@ -27,11 +27,15 @@ func (s *RaftServer) Register(ctx context.Context, req *clientpb.Auth) (*clientp
 func (s *RaftServer) Get(ctx context.Context, req *clientpb.ReadonlyQuery) (*clientpb.Response, error) {
 	var res *clientpb.Response
 	if s.node.IsLeader() {
-		res = &clientpb.Response{Success: true}
+		value, err := s.get(req.Key)
+		if err != nil {
+			res = &clientpb.Response{Success: false, Msg: fmt.Sprintf("查询key失败: %s", err.Error())}
+		} else {
+			res = &clientpb.Response{Success: true, Data: []*clientpb.KvPair{{Key: req.Key, Value: value}}}
+		}
 	} else {
 		res = &clientpb.Response{Success: false}
 	}
-
 	return res, nil
 }
 

@@ -137,29 +137,34 @@ func (t *Tree) insertNode(node *Node) {
 
 	// 按序号将节点插入合适位置
 	level := node.Level
-	length := len(t.tree[level]) - 1
-	idx := length
-	for ; idx >= 0; idx-- {
-		if node.SeqNo > t.tree[level][idx].SeqNo {
-			break
-		} else if node.SeqNo == t.tree[level][idx].SeqNo {
-			t.tree[level][idx] = node
-			return
-		}
+	length := len(t.tree[level])
+	if length == 0 {
+		t.tree[level] = []*Node{node}
+		return
 	}
 
-	if idx == length {
-		t.tree[level] = append(t.tree[level], node)
-	} else {
-		var newLevel []*Node
-		if idx == -1 {
-			newLevel = make([]*Node, 1)
-			newLevel = append(newLevel, t.tree[level]...)
-		} else {
-			newLevel = append(t.tree[level][:idx+1], t.tree[level][idx:]...)
+	if level == 0 {
+		idx := length - 1
+		for ; idx >= 0; idx-- {
+			if node.SeqNo > t.tree[level][idx].SeqNo {
+				break
+			} else if node.SeqNo == t.tree[level][idx].SeqNo {
+				t.tree[level][idx] = node
+				return
+			}
 		}
-		newLevel[idx+1] = node
-		t.tree[level] = newLevel
+		t.tree[level] = append(t.tree[level][:idx+1], t.tree[level][idx:]...)
+		t.tree[level][idx+1] = node
+	} else {
+		for i, n := range t.tree[level] {
+			cmp := bytes.Compare(n.startKey, node.startKey)
+			if cmp < 0 {
+				t.tree[level] = append(t.tree[level][:i+1], t.tree[level][i:]...)
+				t.tree[level][i] = node
+				return
+			}
+		}
+		t.tree[level] = append(t.tree[level], node)
 	}
 }
 
@@ -366,6 +371,14 @@ func (t *Tree) PickupCompactionNode(level int) []*Node {
 			if bytes.Compare(startKey, nodeEndKey) <= 0 && bytes.Compare(endKey, nodeStartKey) >= 0 && !node.compacting {
 				compactionNode = append(compactionNode, node)
 				node.compacting = true
+				if i == level+1 {
+					if bytes.Compare(nodeStartKey, startKey) < 0 {
+						startKey = nodeStartKey
+					}
+					if bytes.Compare(nodeEndKey, endKey) > 0 {
+						endKey = nodeEndKey
+					}
+				}
 			}
 		}
 	}
