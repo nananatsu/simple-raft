@@ -1,7 +1,6 @@
 package raft
 
 import (
-	"fmt"
 	pb "kvdb/pkg/raftpb"
 	"strconv"
 
@@ -27,7 +26,7 @@ type ReadIndexResp struct {
 // raft 集群对等节点状态
 type Cluster struct {
 	incoming           map[uint64]struct{} // 当前/新集群节点
-	outcoming          map[uint64]struct{} // 就集群节点
+	outcoming          map[uint64]struct{} // 旧集群节点
 	pendingChangeIndex uint64              // 未完成变更日志
 	inJoint            bool                // 是否正在进行联合共识
 	voteResp           map[uint64]bool     // 投票节点
@@ -129,12 +128,14 @@ func (c *Cluster) InstallSnapshot(id uint64, snapc chan *pb.Snapshot) {
 	}
 }
 
+// 检查是否能进行变更
+func (c *Cluster) CanChange(changes []*pb.MemberChange) bool {
+	return !(len(c.outcoming) > 0 && len(changes) > 0)
+}
+
 // 变更集群成员
 func (c *Cluster) ApplyChange(changes []*pb.MemberChange) error {
-
-	if len(c.outcoming) > 0 && len(changes) > 0 {
-		return fmt.Errorf("前次变更未完成")
-	} else if len(changes) == 0 {
+	if len(changes) == 0 {
 		// 成员变更数为0,当前变更为阶段2,清空旧集群数据
 		c.outcoming = make(map[uint64]struct{})
 		for k := range c.progress {

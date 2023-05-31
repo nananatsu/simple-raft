@@ -148,16 +148,18 @@ func (n *RaftNode) Propose(ctx context.Context, entries []*pb.LogEntry) error {
 
 // 变更成员提议
 func (n *RaftNode) ChangeMember(ctx context.Context, changes []*pb.MemberChange) error {
-	if n.raft.cluster.pendingChangeIndex <= n.raft.raftlog.lastAppliedIndex {
-		changeCol := &pb.MemberChangeCol{Changes: changes}
-		data, err := proto.Marshal(changeCol)
-		if err != nil {
-			n.logger.Errorf("序列化变更成员信息失败: %v", err)
-			return err
-		}
-		n.Propose(ctx, []*pb.LogEntry{{Type: pb.EntryType_MEMBER_CHNAGE, Data: data}})
+	changeCol := &pb.MemberChangeCol{Changes: changes}
+	data, err := proto.Marshal(changeCol)
+	if err != nil {
+		n.logger.Errorf("序列化变更成员信息失败: %v", err)
+		return err
 	}
-	return fmt.Errorf("上次变更未完成")
+	return n.Propose(ctx, []*pb.LogEntry{{Type: pb.EntryType_MEMBER_CHNAGE, Data: data}})
+}
+
+// 检查是否能进行变更
+func (n *RaftNode) CanChange(changes []*pb.MemberChange) bool {
+	return (n.raft.cluster.pendingChangeIndex <= n.raft.raftlog.lastAppliedIndex) && n.raft.cluster.CanChange(changes)
 }
 
 // 变更成员
@@ -210,11 +212,6 @@ func (n *RaftNode) SendChan() chan []*pb.RaftMessage {
 // 返回发送通道
 func (n *RaftNode) ReadIndexNotifyChan() chan *ReadIndexResp {
 	return n.readIndexc
-}
-
-// 返回通知通道: 成员变更通知
-func (n *RaftNode) MemberChangeNotifyChan() chan []*pb.MemberChange {
-	return n.raft.raftlog.storage.NotifyChan()
 }
 
 // 节点是否就绪

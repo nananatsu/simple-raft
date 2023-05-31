@@ -1,4 +1,4 @@
-## 用go实现Raft-leader选举篇
+## 用go实现Raft (1) - leader选举篇
 ---
 
 raft是一种简单、易理解的分布式共识算法，通过强领导者管理日志复制/提交，集群中数据总是从领导者流向追随者，从而将共识问题分为了三个子问题：
@@ -35,7 +35,7 @@ raft每个节点都保存了任期编号，节点间通信时会交换任期编�
 - RequestVote，canidate在选举期间发送到其他节点请求投票
 - AppendEntries，leader收到新的提案后，转换为日志同步到集群，使用空日志作为心跳
 
-## Leader选举
+### Leader选举
 ---
 leader选举规则：
 - follower在一个选举周期，未收到消息，切换状态到canidate，更新任期，投票给自己，重置选举计时,广RequestVote请求
@@ -479,7 +479,6 @@ func (r *Raft) HandleFollowerMessage(msg *pb.RaftMessage) {
 添加新建函数，实例化raft
 ```go
 func NewRaft(id uint64, peers map[uint64]string, logger *zap.SugaredLogger) *Raft {
-
 	raftlog := NewRaftLog(logger)
 	raft := &Raft{
 		id:               id,
@@ -498,7 +497,7 @@ func NewRaft(id uint64, peers map[uint64]string, logger *zap.SugaredLogger) *Raf
 }
 ```
 
-## grpc实现节点通信
+### grpc实现节点通信
 ---
 之前实现了raft的leader选举部分，没有进行实际消息发送接受，接下来我们将通过grpc实现在不同节点间通信，定义RaftNode结构，将消息发送接收通过不通通道
 - 内部消息接收流程： grpc server -> raftNode.recvc -> raft.handleMessage()
@@ -622,10 +621,11 @@ type Peer struct {
 	mu     sync.Mutex
 	wg     sync.WaitGroup
 	id     uint64
-	node   *raft.RaftNode      // raft节点实例
-	stream Stream              // grpc双向流
-	remote *Remote             // 远端连接信息
-	close  bool                // 是否准备关闭
+	node   *raft.RaftNode       // raft节点实例
+	stream Stream               // grpc双向流
+	recvc  chan *pb.RaftMessage // 流读取数据发送通道
+	remote *Remote              // 远端连接信息
+	close  bool                 // 是否准备关闭
 	logger *zap.SugaredLogger
 }
 ```
@@ -752,7 +752,7 @@ func (p *Peer) SetStream(stream pb.Raft_ConsensusServer) bool {
 	return false
 }
 ```
-实现流读取，循环从流中读取raft消息，调用raftNode消息处理方法进行处理
+实现流读取，循环从流中读取raft消息，通过通道将数据发给raft server
 ```go
 func (p *Peer) Recv() {
 	// 接收消息
@@ -769,22 +769,8 @@ func (p *Peer) Recv() {
 			p.logger.Errorf("读取 %s 流失败： %v", strconv.FormatUint(p.id, 16), err)
 			return
 		}
-
-		err = p.Process(msg)
-		if err != nil {
-			p.logger.Errorf("处理消息失败： %v", err)
-		}
+		p.recvc <- msg
 	}
-}
-
-func (p *Peer) Process(msg *pb.RaftMessage) (err error) {
-	defer func() {
-		if reason := recover(); reason != nil {
-			err = fmt.Errorf("处理消息 %s 失败:%v", msg.String(), reason)
-		}
-	}()
-
-	return p.node.Process(context.Background(), msg)
 }
 ```
 定义raft server，继承grpc定义raft service
@@ -796,6 +782,7 @@ type RaftServer struct {
 	name          string
 	peerAddress   string
 	raftServer    *grpc.Server
+	incomingChan  chan *pb.RaftMessage
 	peers         map[uint64]*Peer
 	node          *raft.RaftNode
 	close         bool
@@ -805,7 +792,7 @@ type RaftServer struct {
 ```
 实现grpc service方法，接收流，并将流保存到map
 - 读取第一条消息，解析来源raft编号
-- 将流设置到集群节点map中来源raft编号对应位置，如来源raft编号不在集群则不做处理
+- 将流设置到集群节点map中来源raft编号对应位置，如来源raft编号不在临时保存连接，完成一次通信后关闭
 - 启动协程读取流，处理接收的raft消息
 ```go
 func (s *RaftServer) Consensus(stream pb.Raft_ConsensusServer) error {
@@ -826,18 +813,24 @@ func (s *RaftServer) addServerPeer(stream pb.Raft_ConsensusServer, msg *pb.RaftM
 	p, isMember := s.peers[msg.From]
 	if !isMember {
 		s.logger.Debugf("收到非集群节点 %s 消息 %s", strconv.FormatUint(msg.From, 16), msg.String())
+
+		p = NewPeer(msg.From, "", s.incomingChan, s.metric, s.logger)
+		s.tmpPeers[msg.From] = p
+		s.node.Process(context.Background(), msg)
+		p.Recv()
 		return fmt.Errorf("非集群节点")
 	}
 
 	s.logger.Debugf("添加 %s 读写流", strconv.FormatUint(msg.From, 16))
 	if p.SetStream(stream) {
-		p.Process(msg)
+		s.node.Process(context.Background(), msg)
 		p.Recv()
 	}
 	return nil
 }
 ```
-启动协程从raftNode发送通道读取待发送数据，从集群节点信息msp取到消息对应节点，通过grpc发送
+启动协程从raftNode发送通道读取待发送数据，从集群节点信息map取到消息对应节点，通过grpc发送，并从各节点流中读取数据处理
+- 如发送到临时节点，则在发送后将临时节点关闭
 ```go
 func (s *RaftServer) handle() {
 	go func() {
@@ -847,6 +840,8 @@ func (s *RaftServer) handle() {
 				return
 			case msgs := <-s.node.SendChan():
 				s.sendMsg(msgs)
+			case msg := <-s.incomingChan:
+				s.process(msg)
 			}
 		}
 	}()
@@ -857,7 +852,12 @@ func (s *RaftServer) sendMsg(msgs []*pb.RaftMessage) {
 
 	for _, msg := range msgs {
 		if s.peers[msg.To] == nil {
-			s.logger.Debugf("节点 %s 不在集群, 发送消息失败", strconv.FormatUint(msg.To, 16))
+			p := s.tmpPeers[msg.To]
+			if p != nil {
+				p.send(msg)
+			}
+			p.Stop()
+			delete(s.tmpPeers, msg.To)
 			continue
 		} else {
 			if msgMap[msg.To] == nil {
@@ -871,6 +871,15 @@ func (s *RaftServer) sendMsg(msgs []*pb.RaftMessage) {
 			s.peers[k].SendBatch(v)
 		}
 	}
+}
+
+func (s *RaftServer) process(msg *pb.RaftMessage) (err error) {
+	defer func() {
+		if reason := recover(); reason != nil {
+			err = fmt.Errorf("处理消息 %s 失败:%v", msg.String(), reason)
+		}
+	}()
+	return s.node.Process(context.Background(), msg)
 }
 ```
 实现grpc server启动方法
@@ -934,13 +943,14 @@ func Bootstrap(conf *Config) *RaftServer {
 		node.InitMember(peers)
 	}
 
+	incomingChan := make(chan *pb.RaftMessage)
 	// 初始化远端节点配置
 	for id, address := range peers {
 		conf.Logger.Infof("集群成员 %s 地址 %s", strconv.FormatUint(id, 16), address)
 		if id == nodeId {
 			continue
 		}
-		servers[id] = NewPeer(id, address, node, metric, conf.Logger)
+		servers[id] = NewPeer(id, address, incomingChan, conf.Logger)
 	}
 
 	server := &RaftServer{
@@ -960,4 +970,6 @@ func Bootstrap(conf *Config) *RaftServer {
 [完整代码](https://github.com/nananatsu/simple-raft)
 
 参考：
-- <https://github.com/etcd-io/etcd>
+- [In Search of an Understandable Consensus Algorithm](https://raft.github.io/raft.pdf)
+- [CONSENSUS: BRIDGING THEORY AND PRACTICE](https://web.stanford.edu/~ouster/cgi-bin/papers/OngaroPhD.pdf)
+- [etcd/raft](https://github.com/etcd-io/etcd)

@@ -2,9 +2,7 @@ package server
 
 import (
 	"context"
-	"fmt"
 	"io"
-	"kvdb/pkg/raft"
 	pb "kvdb/pkg/raftpb"
 	"strconv"
 	"sync"
@@ -33,11 +31,12 @@ type Peer struct {
 	mu     sync.Mutex
 	wg     sync.WaitGroup
 	id     uint64
-	node   *raft.RaftNode      // raft节点实例
-	stream Stream              // grpc双向流
-	remote *Remote             // 远端连接信息
-	metric chan pb.MessageType // 监控通道
-	close  bool                // 是否准备关闭
+	stream Stream  // grpc双向流
+	remote *Remote // 远端连接信息
+
+	recvc  chan *pb.RaftMessage // 流读取数据发送通道
+	metric chan pb.MessageType  // 监控通道
+	close  bool                 // 是否准备关闭
 	logger *zap.SugaredLogger
 }
 
@@ -99,19 +98,6 @@ func (p *Peer) send(msg *pb.RaftMessage) {
 	p.metric <- msg.MsgType
 }
 
-// 处理消息接收
-func (p *Peer) Process(msg *pb.RaftMessage) (err error) {
-	defer func() {
-		if reason := recover(); reason != nil {
-			err = fmt.Errorf("处理消息 %s 失败:%v", msg.String(), reason)
-		}
-	}()
-
-	p.metric <- msg.MsgType
-
-	return p.node.Process(context.Background(), msg)
-}
-
 // 阻塞流读取数据
 func (p *Peer) Recv() {
 	// 接收消息
@@ -128,11 +114,7 @@ func (p *Peer) Recv() {
 			p.logger.Errorf("读取 %s 流失败： %v", strconv.FormatUint(p.id, 16), err)
 			return
 		}
-
-		err = p.Process(msg)
-		if err != nil {
-			p.logger.Errorf("处理消息失败： %v", err)
-		}
+		p.recvc <- msg
 	}
 }
 
@@ -235,11 +217,11 @@ func (p *Peer) Connect() error {
 	return p.Reconnect()
 }
 
-func NewPeer(id uint64, address string, node *raft.RaftNode, metric chan pb.MessageType, logger *zap.SugaredLogger) *Peer {
+func NewPeer(id uint64, address string, recvc chan *pb.RaftMessage, metric chan pb.MessageType, logger *zap.SugaredLogger) *Peer {
 	p := &Peer{
 		id:     id,
 		remote: &Remote{address: address},
-		node:   node,
+		recvc:  recvc,
 		metric: metric,
 		logger: logger,
 	}

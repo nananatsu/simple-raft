@@ -5,7 +5,7 @@
 1. [领导选取](./doc/raft_learn_1.md)
 2. [日志同步](./doc/raft_learn_2.md)
 3. [日志压缩](./doc/raft_learn_3.md)
-4. 成员变更
+4. [成员变更](./doc/raft_learn_4.md)
 
 ## 参考
 

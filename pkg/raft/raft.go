@@ -266,6 +266,7 @@ func (r *Raft) AppendEntry(entries []*pb.LogEntry) {
 		}
 		entry.Index = lastLogIndex + 1 + uint64(i)
 		entry.Term = r.currentTerm
+
 	}
 	r.raftlog.AppendEntry(entries)
 	r.cluster.UpdateLogIndex(r.id, entries[len(entries)-1].Index)
@@ -570,8 +571,12 @@ func (r *Raft) ReciveAppendEntries(mLeader, mTerm, mLastLogTerm, mLastLogIndex, 
 	})
 }
 
-// 处理选取
+// 处理选举
 func (r *Raft) ReciveRequestVote(mTerm, mCandidateId, mLastLogTerm, mLastLogIndex uint64) (success bool) {
+
+	if r.hearbeatTick < r.electionTimeout {
+		return false
+	}
 
 	lastLogIndex, lastLogTerm := r.raftlog.GetLastLogIndexAndTerm()
 	if r.voteFor == 0 || r.voteFor == mCandidateId {

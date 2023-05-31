@@ -57,13 +57,15 @@ func Bootstrap(conf *Config) *RaftServer {
 		node.InitMember(peers)
 	}
 
+	incomingChan := make(chan *pb.RaftMessage)
+
 	// 初始化远端节点配置
 	for id, address := range peers {
 		conf.Logger.Infof("集群成员 %s 地址 %s", strconv.FormatUint(id, 16), address)
 		if id == nodeId {
 			continue
 		}
-		servers[id] = NewPeer(id, address, node, metric, conf.Logger)
+		servers[id] = NewPeer(id, address, incomingChan, metric, conf.Logger)
 	}
 
 	server := &RaftServer{
