@@ -76,6 +76,7 @@ func Bootstrap(conf *Config) *RaftServer {
 		peerAddress:   conf.PeerAddress,
 		serverAddress: conf.ServerAddress,
 		peers:         servers,
+		incomingChan:  incomingChan,
 		encoding:      &raft.SimpleEncoding{},
 		node:          node,
 		storage:       storage,

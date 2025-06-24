@@ -574,7 +574,7 @@ func (r *Raft) ReciveAppendEntries(mLeader, mTerm, mLastLogTerm, mLastLogIndex, 
 // 处理选举
 func (r *Raft) ReciveRequestVote(mTerm, mCandidateId, mLastLogTerm, mLastLogIndex uint64) (success bool) {
 
-	if r.hearbeatTick < r.electionTimeout {
+	if r.electtionTick < r.electionTimeout {
 		return false
 	}
 
