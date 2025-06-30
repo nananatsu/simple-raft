@@ -55,10 +55,10 @@ func (r *Raft) SwitchCandidate() {
 		p.NextIndex = lastIndex + 1
 		p.MatchIndex = lastIndex
 	})
+	r.logger.Debugf("成为候选者, 任期 %d , 选取周期 %d s", r.currentTerm, r.randomElectionTimeout)
 
 	r.BroadcastRequestVote()
 	r.electtionTick = 0
-	r.logger.Debugf("成为候选者, 任期 %d , 选取周期 %d s", r.currentTerm, r.randomElectionTimeout)
 }
 
 // 切换节点为Follower
@@ -154,18 +154,18 @@ func (r *Raft) HandleMessage(msg *pb.RaftMessage) {
 
 	// 消息任期小于节点任期,拒绝消息: 1、网络延迟，节点任期是集群任期; 2、网络断开,节点增加了任期，集群任期是消息任期
 	if msg.Term < r.currentTerm {
-		r.logger.Debugf("收到来自 %s 过期 (%d) %s 消息 ", strconv.FormatUint(msg.From, 16), msg.Term, msg.MsgType)
+		r.logger.Debugf("收到来自 %s 过期 (%d - %d) %s 消息 ", strconv.FormatUint(msg.From, 16), msg.Term, r.currentTerm, msg.MsgType)
 		return
 	} else if msg.Term > r.currentTerm {
 		// 消息非请求投票，集群发生选取，新任期产生
-		if msg.MsgType != pb.MessageType_VOTE {
-			// 日志追加、心跳、快照为leader发出，，节点成为该leader追随者
-			if msg.MsgType == pb.MessageType_APPEND_ENTRY || msg.MsgType == pb.MessageType_HEARTBEAT || msg.MsgType == pb.MessageType_INSTALL_SNAPSHOT {
-				r.SwitchFollower(msg.From, msg.Term)
-			} else { // 变更节点为追随者，等待leader消息
-				r.SwitchFollower(msg.From, 0)
-			}
+		// if msg.MsgType != pb.MessageType_VOTE {
+		// 日志追加、心跳、快照为leader发出，，节点成为该leader追随者
+		if msg.MsgType == pb.MessageType_VOTE || msg.MsgType == pb.MessageType_APPEND_ENTRY || msg.MsgType == pb.MessageType_HEARTBEAT || msg.MsgType == pb.MessageType_INSTALL_SNAPSHOT {
+			r.SwitchFollower(msg.From, msg.Term)
+		} else { // 变更节点为追随者，等待leader消息
+			r.SwitchFollower(msg.From, 0)
 		}
+		// }
 	}
 
 	r.hanbleMessage(msg)
@@ -322,13 +322,13 @@ func (r *Raft) BroadcastRequestVote() {
 	r.cluster.ResetVoteResult()
 	r.cluster.Vote(r.id, true)
 
-	r.logger.Infof("%s 发起投票", strconv.FormatUint(r.id, 16))
+	r.logger.Infof("%s（任期） 发起投票", strconv.FormatUint(r.id, 16), r.currentTerm)
 
+	lastLogIndex, lastLogTerm := r.raftlog.GetLastLogIndexAndTerm()
 	r.cluster.Foreach(func(id uint64, p *ReplicaProgress) {
 		if id == r.id {
 			return
 		}
-		lastLogIndex, lastLogTerm := r.raftlog.GetLastLogIndexAndTerm()
 		r.send(&pb.RaftMessage{
 			MsgType:      pb.MessageType_VOTE,
 			Term:         r.currentTerm,
@@ -339,6 +339,7 @@ func (r *Raft) BroadcastRequestVote() {
 		})
 	})
 
+	r.checkVoteResult(lastLogIndex, lastLogIndex)
 }
 
 // 发送日志到指定节点
@@ -414,13 +415,7 @@ func (r *Raft) send(msg *pb.RaftMessage) {
 	r.Msg = append(r.Msg, msg)
 }
 
-// 处理选取响应
-func (r *Raft) ReciveVoteResp(from, term, lastLogTerm, lastLogIndex uint64, success bool) {
-
-	leaderLastLogIndex, _ := r.raftlog.GetLastLogIndexAndTerm()
-	r.cluster.Vote(from, success)
-	r.cluster.ResetLogIndex(from, lastLogIndex, leaderLastLogIndex)
-
+func (r *Raft) checkVoteResult(lastLogIndex, leaderLastLogIndex uint64) {
 	voteRes := r.cluster.CheckVoteResult()
 	if voteRes == VoteWon {
 		r.logger.Debugf("节点 %s 发起投票, 赢得选取", strconv.FormatUint(r.id, 16))
@@ -436,6 +431,15 @@ func (r *Raft) ReciveVoteResp(from, term, lastLogTerm, lastLogIndex uint64, succ
 		r.voteFor = 0
 		r.cluster.ResetVoteResult()
 	}
+}
+
+// 处理选取响应
+func (r *Raft) ReciveVoteResp(from, term, lastLogTerm, lastLogIndex uint64, success bool) {
+	leaderLastLogIndex, _ := r.raftlog.GetLastLogIndexAndTerm()
+	r.cluster.Vote(from, success)
+	r.cluster.ResetLogIndex(from, lastLogIndex, leaderLastLogIndex)
+
+	r.checkVoteResult(lastLogIndex, leaderLastLogIndex)
 }
 
 // 处理日志添加响应
@@ -574,13 +578,14 @@ func (r *Raft) ReciveAppendEntries(mLeader, mTerm, mLastLogTerm, mLastLogIndex, 
 // 处理选举
 func (r *Raft) ReciveRequestVote(mTerm, mCandidateId, mLastLogTerm, mLastLogIndex uint64) (success bool) {
 
-	if r.electtionTick < r.electionTimeout {
+	if r.electtionTick < r.electionTimeout && r.voteFor != 0 {
+		r.logger.Debugf("当前选取周期已投票%s，拒绝候选人%s投票请求 ", strconv.FormatUint(r.voteFor, 16), strconv.FormatUint(mCandidateId, 16))
 		return false
 	}
 
 	lastLogIndex, lastLogTerm := r.raftlog.GetLastLogIndexAndTerm()
 	if r.voteFor == 0 || r.voteFor == mCandidateId {
-		if mTerm > r.currentTerm && mLastLogTerm >= lastLogTerm && mLastLogIndex >= lastLogIndex {
+		if mLastLogTerm >= lastLogTerm && mLastLogIndex >= lastLogIndex {
 			r.voteFor = mCandidateId
 			success = true
 		}
